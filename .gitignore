@@ -1,0 +1,14 @@
+
+
+/Admin/adminbackend/venv/
+/Admin/adminbackend/venv.old/
+/.vscode/
+/.venv/
+/.idea/
+/Admin/adminfrontend/node_modules/
+/README.md
+/User/backend/logs/
+/User/backend/.venv/
+/User/backend/venv/
+/User/backend/venv.old/
+/User/frontend/node_modules/

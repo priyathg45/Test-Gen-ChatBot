@@ -1,0 +1,137 @@
+.admin-layout {
+  display: flex;
+  min-height: 100vh;
+  background: #f4f6f9;
+}
+
+.admin-sidebar {
+  width: 240px;
+  background: #2c3e50;
+  color: #ecf0f1;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.admin-sidebar-header {
+  padding: 1.25rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.admin-sidebar-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.admin-role-badge {
+  display: inline-block;
+  margin-top: 0.35rem;
+  padding: 0.2rem 0.5rem;
+  background: #3498db;
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+
+.admin-nav {
+  flex: 1;
+  padding: 1rem 0;
+}
+
+.admin-nav-item {
+  display: block;
+  padding: 0.6rem 1.25rem;
+  color: #bdc3c7;
+  text-decoration: none;
+  transition: background 0.2s, color 0.2s;
+}
+
+.admin-nav-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
+}
+
+.admin-nav-item.active {
+  background: rgba(52, 152, 219, 0.3);
+  color: #fff;
+}
+
+.admin-sidebar-footer {
+  padding: 1rem 1.25rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.admin-user-email {
+  font-size: 0.85rem;
+  color: #95a5a6;
+  margin-bottom: 0.5rem;
+  word-break: break-all;
+}
+
+.admin-sidebar-footer .btn {
+  margin-top: 0.5rem;
+  width: 100%;
+}
+
+.admin-main {
+  flex: 1;
+  padding: 1.5rem 2rem;
+  overflow: auto;
+}
+
+.admin-page-title {
+  margin: 0 0 1.5rem;
+  font-size: 1.5rem;
+  color: #2c3e50;
+}
+
+.admin-card {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  padding: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
+
+.admin-table th {
+  font-weight: 600;
+  color: #555;
+  background: #fafafa;
+}
+
+.admin-table tr:hover td {
+  background: #f9f9f9;
+}
+
+.admin-table .btn-link {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.9rem;
+}
+
+.admin-badge {
+  display: inline-block;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
+}
+
+.admin-badge.role-admin {
+  background: #3498db;
+  color: #fff;
+}
+
+.admin-badge.role-user {
+  background: #95a5a6;
+  color: #fff;
+}
