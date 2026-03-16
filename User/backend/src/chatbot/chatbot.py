@@ -313,11 +313,16 @@ Always: Understand what the user is asking. Prefer the document content when the
                 selected = chunks_to_use[:top_k_doc]
             else:
                 chunk_texts = [c["text"] for c in chunks_to_use]
-                chunk_embeddings = self.embeddings_manager.model.encode(chunk_texts, show_progress_bar=False)
-                sims = cosine_similarity([query_embedding], chunk_embeddings)[0]
-                top_k_here = min(top_k_doc, len(chunks_to_use))
-                top_indices = np.argsort(sims)[::-1][:top_k_here]
-                selected = [chunks_to_use[i] for i in top_indices]
+                # Use manager to encode instead of model directly, routing through Ollama if configured
+                chunk_embeddings = self.embeddings_manager.create_embeddings(chunk_texts)
+                
+                if chunk_embeddings is None:
+                    selected = chunks_to_use[:top_k_doc]
+                else:
+                    sims = cosine_similarity([query_embedding], chunk_embeddings)[0]
+                    top_k_here = min(top_k_doc, len(chunks_to_use))
+                    top_indices = np.argsort(sims)[::-1][:top_k_here]
+                    selected = [chunks_to_use[i] for i in top_indices]
         except Exception as e:
             logger.warning("PDF chunk ranking failed (using first chunks): %s", e)
             selected = chunks_to_use[:top_k_doc]
@@ -432,11 +437,25 @@ Always: Understand what the user is asking. Prefer the document content when the
             except Exception as ollama_err:
                 logger.warning("Ollama document response failed, trying local LLM: %s", ollama_err)
 
-        # Prefer real-time answer generation with local LLM when enabled.
-        if getattr(self.config, "LOCAL_LLM_ENABLED", False):
+        # Prefer real-time answer generation with Ollama OR local LLM
+        if use_ollama_for_docs and is_ollama_available(ollama_base):
+            try:
+                answer = generate_answer_with_ollama(
+                    system_prompt=self.system_prompt,
+                    messages=messages,
+                    base_url=ollama_base,
+                    model=ollama_model,
+                    max_tokens=doc_max_tokens,
+                    temperature=getattr(self.config, "LOCAL_LLM_TEMPERATURE", 0.2),
+                )
+                if answer:
+                    return answer
+            except Exception as ollama_fall_err:
+                logger.warning("Ollama regular response failed: %s", ollama_fall_err)
+        
+        elif getattr(self.config, "LOCAL_LLM_ENABLED", False):
             try:
                 from src.chatbot.local_llm import generate_answer
-
                 default_tokens = getattr(self.config, "LOCAL_LLM_MAX_NEW_TOKENS", 256)
                 max_tokens = doc_max_tokens if document_context else default_tokens
                 answer = generate_answer(
@@ -554,10 +573,14 @@ Always: Understand what the user is asking. Prefer the document content when the
             except Exception as doc_err:
                 logger.exception("Document context failed (continuing without): %s", doc_err)
 
-            # Document-first: user asked to summarize/explain the uploaded file, or we have doc and they asked about it
+            has_doc = bool(document_context)
+            is_product_explicit = any(k in normalized for k in ["product", "aluminum", "aluminium", "alloy", "price", "cost", "specifications", "applications"])
+            
+            # Document-first: If we have an uploaded document, assume ALL questions are about the document
+            # UNLESS the user explicitly asks about aluminum products.
             is_doc_summary = self._is_document_summary_request(normalized) or (
-                bool(document_context) and self._wants_document_answer(normalized)
-            )
+                has_doc and self._wants_document_answer(normalized)
+            ) or (has_doc and not is_product_explicit)
 
             # Retrieve products only when the question is not purely about the document
             products = []

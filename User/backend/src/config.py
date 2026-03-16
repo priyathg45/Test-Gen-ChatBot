@@ -59,9 +59,10 @@ class Config:
     MONGO_CLIENT_KWARGS = _mongo_kwargs
     
     # Model settings (semantic search / embeddings)
-    # Default to a higher-accuracy model than all-MiniLM-L6-v2.
-    # You can override via MODEL_NAME env if needed.
-    MODEL_NAME = os.getenv('MODEL_NAME', 'all-mpnet-base-v2')
+    # Set to true to route all embeddings through Ollama instead of relying on SentenceTransformers PyTorch weights.
+    USE_OLLAMA_FOR_EMBEDDINGS = os.getenv('USE_OLLAMA_FOR_EMBEDDINGS', 'true').lower() == 'true'
+    # Default to a higher-accuracy model or your preferred Ollama model
+    MODEL_NAME = os.getenv('MODEL_NAME', 'llama4-scout')
     TOP_K_RESULTS = int(os.getenv('TOP_K_RESULTS', 3))
     SIMILARITY_THRESHOLD = float(os.getenv('SIMILARITY_THRESHOLD', 0.3))
     
@@ -101,11 +102,15 @@ class Config:
 
     # Ollama (local LLM server) for document QA. Default false = use fast template from extracted text (CPU-friendly).
     # Set true only if Ollama is running (e.g. ollama run llama3.2) for LLM-powered document answers.
-    USE_OLLAMA_FOR_DOCUMENTS = os.getenv('USE_OLLAMA_FOR_DOCUMENTS', 'false').lower() == 'true'
+    USE_OLLAMA_FOR_DOCUMENTS = os.getenv('USE_OLLAMA_FOR_DOCUMENTS', 'true').lower() == 'true'
     OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
-    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2')
+    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama4-scout')
     # Max tokens for document summaries/answers when using Ollama/local LLM (lower = faster on CPU)
     DOC_LLM_MAX_TOKENS = int(os.getenv('DOC_LLM_MAX_TOKENS', 512))
+
+    # Vision LLM settings for document extraction (PDFs and images)
+    USE_VISION_LLM_FOR_EXTRACTION = os.getenv('USE_VISION_LLM_FOR_EXTRACTION', 'true').lower() == 'true'
+    OLLAMA_VISION_MODEL = os.getenv('OLLAMA_VISION_MODEL', 'llama4-scout')
 
 class DevelopmentConfig(Config):
     """Development configuration."""

@@ -6,6 +6,9 @@ import logging
 import os
 import re
 import tempfile
+import base64
+import json
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import List, Optional, Tuple
 
@@ -55,6 +58,78 @@ def _get_pdf_executor() -> ThreadPoolExecutor:
         _pdf_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pdf_extract")
     return _pdf_executor
 
+def extract_content_with_vision_llm(content: bytes, filename: str, is_pdf: bool) -> str:
+    """Uses Ollama Vision LLM (e.g. Llama 4 Scout) to extract text and describe images/diagrams."""
+    try:
+        from src.config import config
+        if not getattr(config, "USE_VISION_LLM_FOR_EXTRACTION", False):
+            return ""
+        
+        base_url = getattr(config, "OLLAMA_BASE_URL", "http://localhost:11434")
+        model = getattr(config, "OLLAMA_VISION_MODEL", "llama4-scout")
+        
+        # Check if Ollama is reachable
+        try:
+            req = urllib.request.Request(f"{base_url.rstrip('/')}/api/tags", method="GET")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                if resp.status != 200:
+                    return ""
+        except Exception:
+            return ""
+        
+        images_b64 = []
+        if is_pdf:
+            if not HAS_PDF2IMAGE:
+                logger.warning("Vision LLM: pdf2image not installed, cannot process PDF images.")
+                return ""
+            try:
+                # PDF to images (first 10 pages only for speed)
+                pdf_images = convert_from_bytes(content, first_page=1, last_page=10, dpi=150)
+                for img in pdf_images:
+                    buffered = io.BytesIO()
+                    img.save(buffered, format="JPEG")
+                    images_b64.append(base64.b64encode(buffered.getvalue()).decode("utf-8"))
+            except Exception as e:
+                logger.warning("Vision LLM PDF conversion failed: %s", e)
+                return ""
+        else:
+            images_b64.append(base64.b64encode(content).decode("utf-8"))
+            
+        if not images_b64:
+            return ""
+
+        prompt = (
+            "You are a document extraction assistant. Please read the provided document/image. "
+            "Extract all textual content accurately. If there are any images, charts, plots, or diagrams, "
+            "describe them in detail (e.g., what the chart measures, the visual contents of the image) "
+            "so the information is preserved as text."
+        )
+        
+        body = {
+            "model": model,
+            "prompt": prompt,
+            "images": images_b64,
+            "stream": False,
+            "options": {"temperature": 0.1, "num_predict": 1024},
+        }
+        
+        req = urllib.request.Request(
+            f"{base_url.rstrip('/')}/api/generate",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        logger.info(f"Sending vision extraction request to {model} for {filename}...")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode())
+            result = (data.get("response") or "").strip()
+            if result:
+                logger.info(f"Vision LLM extracted {len(result)} characters from {filename}")
+                return result
+        return ""
+    except Exception as e:
+        logger.warning(f"Vision LLM extraction failed for {filename}: {e}")
+        return ""
 
 def _extract_text_from_pdf_impl(content: bytes, filename: str, max_pages: int) -> str:
     """
@@ -137,6 +212,11 @@ def extract_text_from_pdf(
     """
     timeout = timeout if timeout is not None else PDF_EXTRACTION_TIMEOUT
     max_pages = max_pages if max_pages is not None else PDF_MAX_PAGES
+
+    # Try Vision LLM first (if enabled and reachable) for smart text & image understanding
+    vision_text = extract_content_with_vision_llm(content, filename, is_pdf=True)
+    if vision_text:
+        return vision_text
 
     text = ""
 
@@ -253,6 +333,11 @@ def extract_text_from_image(content: bytes, filename: str = "") -> str:
     Returns:
         Extracted text or empty string if OCR not available or fails.
     """
+    # Try Vision LLM first (if enabled and reachable) for smart image understanding
+    vision_text = extract_content_with_vision_llm(content, filename, is_pdf=False)
+    if vision_text:
+        return vision_text
+
     if not HAS_OCR:
         logger.warning(
             "PIL/pytesseract not installed; cannot extract image text. "

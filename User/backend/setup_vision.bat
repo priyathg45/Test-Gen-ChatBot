@@ -1,0 +1,6 @@
+@echo off
+echo Pulling Llama 3.2 Vision locally as a fast proxy for Llama 4 Scout...
+ollama pull llama3.2-vision
+echo Copying model to the alias expected by backend...
+ollama cp llama3.2-vision llama4-scout
+echo Done! The backend can now process PDF images via Ollama safely.

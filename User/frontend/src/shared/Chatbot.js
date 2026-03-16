@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import './Chatbot.css';
 import { CHAT_API_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
+import ReactMarkdown from 'react-markdown';
 
 const generateSessionId = () =>
   `chat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
@@ -286,6 +287,14 @@ const Chatbot = () => {
           <div style={{ display: 'flex', gap: '8px' }}>
             <button
               type="button"
+              onClick={startNewChat}
+              aria-label="Start new chat"
+              title="New Chat"
+            >
+              <i className="fa fa-plus" style={{ fontSize: '14px' }} />
+            </button>
+            <button
+              type="button"
               onClick={() => setIsExpanded(!isExpanded)}
               aria-label={isExpanded ? 'Compress chat' : 'Expand chat'}
               title={isExpanded ? 'Compress display' : 'Expand to full screen'}
@@ -299,7 +308,6 @@ const Chatbot = () => {
         </div>
         {showHistory ? (
           <div className="chatbot-history-view">
-            <button className="new-chat-btn" onClick={startNewChat}>+ New Chat</button>
             {sessions.map(s => (
               <div key={s.session_id} className="history-item" onClick={() => loadSession(s.session_id)}>
                 <div className="history-title">{s.title || 'Conversation'}</div>
@@ -319,7 +327,7 @@ const Chatbot = () => {
             <div className="chatbot-messages">
               {messages.map((m) => (
                 <div key={m.id} className={`chatbot-message ${m.from}`}>
-                  {m.text}
+                  {m.from === 'bot' ? <ReactMarkdown>{m.text}</ReactMarkdown> : m.text}
                 </div>
               ))}
               {loading && (
@@ -329,16 +337,6 @@ const Chatbot = () => {
               )}
               <div ref={messagesEndRef} />
             </div>
-            {attachments.length > 0 && (
-              <div className="chatbot-attachments">
-                <span className="chatbot-attachments-label">Session Files:</span>
-                {attachments.map((att) => (
-                  <span key={att.id} className="chatbot-attachment-tag" title={att.filename}>
-                    {att.filename}
-                  </span>
-                ))}
-              </div>
-            )}
             {stagedFile && (
               <div className="staged-file-area">
                 <span>📎 {stagedFile.name} ({(stagedFile.size / 1024 / 1024).toFixed(2)} MB)</span>
