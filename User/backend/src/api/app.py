@@ -514,8 +514,10 @@ def chat():
 def get_history():
     """Get conversation history."""
     try:
+        payload = _current_user()
+        user_id = payload['sub'] if payload else None
         session_id = request.args.get('session_id')
-        history = chatbot.get_history(session_id=session_id)
+        history = chatbot.get_history(session_id=session_id, user_id=user_id)
         return jsonify({
             'success': True,
             'history': history,
@@ -566,7 +568,9 @@ def get_stats():
 def list_sessions():
     """List chat sessions."""
     try:
-        sessions = chatbot.get_sessions()
+        payload = _current_user()
+        user_id = payload['sub'] if payload else None
+        sessions = chatbot.get_sessions(user_id=user_id)
         return jsonify({
             'success': True,
             'sessions': sessions,
@@ -584,7 +588,9 @@ def list_sessions():
 def get_session_history(session_id):
     """Get history for a specific session."""
     try:
-        history = chatbot.get_history(session_id=session_id)
+        payload = _current_user()
+        user_id = payload['sub'] if payload else None
+        history = chatbot.get_history(session_id=session_id, user_id=user_id)
         return jsonify({
             'success': True,
             'session_id': session_id,
@@ -708,6 +714,9 @@ def upload_file():
         if mongo_db is None:
             return jsonify({'success': False, 'error': 'File storage not available (MongoDB required)'}), 503
 
+        payload = _current_user()
+        user_id = payload['sub'] if payload else None
+
         doc = save_attachment(
             database=mongo_db,
             attachments_collection_name=app.config.get('MONGO_ATTACHMENTS_COLLECTION', 'chat_attachments'),
@@ -715,6 +724,7 @@ def upload_file():
             filename=filename,
             content_type=content_type,
             file_bytes=file_bytes,
+            user_id=user_id,
         )
         if doc is None:
             return jsonify({'success': False, 'error': 'Failed to save attachment'}), 500

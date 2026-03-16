@@ -32,23 +32,54 @@ const Chatbot = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  const fetchAttachments = async () => {
+  const fetchSessionData = async () => {
     try {
-      const res = await fetch(
-        `${CHAT_API_URL}/sessions/${encodeURIComponent(sessionIdRef.current)}/attachments`
+      let currentSessionId = sessionIdRef.current;
+      
+      if (token) {
+        const sessRes = await fetch(`${CHAT_API_URL}/sessions`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const sessData = await sessRes.json();
+        if (sessData.success && sessData.sessions && sessData.sessions.length > 0) {
+          currentSessionId = sessData.sessions[0].session_id;
+          sessionIdRef.current = currentSessionId;
+          
+          const histRes = await fetch(`${CHAT_API_URL}/history?session_id=${encodeURIComponent(currentSessionId)}`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          const histData = await histRes.json();
+          if (histData.success && histData.history && histData.history.length > 0) {
+            const loadedMsgs = histData.history.map((m, i) => ({
+              id: Date.now() + i,
+              from: m.role === 'assistant' ? 'bot' : 'user',
+              text: m.content
+            }));
+            setMessages(loadedMsgs);
+          }
+        }
+      }
+
+      const headers = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const attRes = await fetch(
+        `${CHAT_API_URL}/sessions/${encodeURIComponent(currentSessionId)}/attachments`,
+        { headers }
       );
-      const data = await res.json();
-      if (data.success && Array.isArray(data.attachments)) {
-        setAttachments(data.attachments);
+      const attData = await attRes.json();
+      if (attData.success && Array.isArray(attData.attachments)) {
+        setAttachments(attData.attachments);
       }
     } catch (_) {
-      setAttachments([]);
+      // ignore
     }
   };
 
   useEffect(() => {
-    if (open && sessionIdRef.current) fetchAttachments();
-  }, [open]);
+    if (open) fetchSessionData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, token]);
 
   const uploadDocument = async (file) => {
     if (!file || uploading) return;
@@ -65,8 +96,13 @@ const Chatbot = () => {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('session_id', sessionIdRef.current);
+
+      const headers = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
       const res = await fetch(`${CHAT_API_URL}/upload`, {
         method: 'POST',
+        headers,
         body: formData,
       });
       const data = await res.json();
