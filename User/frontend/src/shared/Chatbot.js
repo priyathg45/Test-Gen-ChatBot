@@ -327,12 +327,24 @@ const Chatbot = () => {
             <div className="chatbot-messages">
               {messages.map((m) => (
                 <div key={m.id} className={`chatbot-message ${m.from}`}>
-                  {m.from === 'bot' ? <ReactMarkdown>{m.text}</ReactMarkdown> : m.text}
+                  {m.from === 'bot' ? (
+                    <>
+                      <div className="bot-avatar"><i className="fa fa-robot" /></div>
+                      <div className="bot-bubble"><ReactMarkdown>{m.text}</ReactMarkdown></div>
+                    </>
+                  ) : (
+                    m.text
+                  )}
                 </div>
               ))}
               {loading && (
                 <div className="chatbot-message bot chatbot-typing">
-                  Thinking…
+                  <div className="bot-avatar"><i className="fa fa-robot" /></div>
+                  <div className="bot-bubble">
+                    <div className="typing-dot" />
+                    <div className="typing-dot" />
+                    <div className="typing-dot" />
+                  </div>
                 </div>
               )}
               <div ref={messagesEndRef} />

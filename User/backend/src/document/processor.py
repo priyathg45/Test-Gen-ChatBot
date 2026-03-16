@@ -102,7 +102,8 @@ def extract_content_with_vision_llm(content: bytes, filename: str, is_pdf: bool)
             "You are a document extraction assistant. Please read the provided document/image. "
             "Extract all textual content accurately. If there are any images, charts, plots, or diagrams, "
             "describe them in detail (e.g., what the chart measures, the visual contents of the image) "
-            "so the information is preserved as text."
+            "so the information is preserved as text. "
+            "IMPORTANT: If there are multiple pages/images, you MUST explicitly label the start of each page's content with [PAGE_X] where X is the page number (starting from 1)."
         )
         
         body = {
@@ -170,7 +171,7 @@ def _extract_text_from_pdf_impl(content: bytes, filename: str, max_pages: int) -
                                     page_text += (span.get("text") or "") + " "
                 except Exception as e:
                     logger.debug("get_text('dict') fallback failed for page %s: %s", page_count + 1, e)
-            parts.append((page_text or "").strip())
+            parts.append(f"[PAGE_{page_count + 1}]\n" + (page_text or "").strip())
             page_count += 1
         text = "\n\n".join(p for p in parts if p).strip()
         text = re.sub(r"\n{3,}", "\n\n", text)
@@ -247,7 +248,7 @@ def extract_text_from_pdf(
             for i in range(min(num_pages, max_pages)):
                 try:
                     page = reader.pages[i]
-                    parts.append(page.extract_text() or "")
+                    parts.append(f"[PAGE_{i + 1}]\n" + (page.extract_text() or "").strip())
                 except Exception as e:
                     logger.warning("PyPDF2 page %s failed for %s: %s", i + 1, filename or "stream", e)
                     parts.append("")
@@ -382,6 +383,8 @@ def chunk_text(
 
     chunks = []
     start = 0
+    page_marker_pattern = re.compile(r"\[PAGE_(\d+)\]")
+    
     while start < len(text):
         end = start + chunk_size
         # Prefer breaking at sentence or paragraph
@@ -393,6 +396,16 @@ def chunk_text(
                     break
         chunk = text[start:end].strip()
         if chunk:
+            # Find the active page number for this chunk
+            text_up_to_end = text[:end]
+            matches = list(page_marker_pattern.finditer(text_up_to_end))
+            if matches:
+                last_match = matches[-1]
+                page_num = last_match.group(1)
+                marker = f"[PAGE_{page_num}]\n"
+                if not chunk.startswith(f"[PAGE_{page_num}]"):
+                    chunk = marker + chunk
+            
             chunks.append(chunk)
         
         next_start = end - overlap if overlap < (end - start) else end

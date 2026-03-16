@@ -299,6 +299,19 @@ Always: Understand what the user is asking. Prefer the document content when the
             logger.info("No text chunks from attachments for session %s (extraction may have produced no text)", session_id)
             return ""
 
+        # ── Page-number filtering ─────────────────────────────────────────────
+        import re as _re
+        requested_page = self._detect_page_request(query)
+        if requested_page is not None:
+            page_marker = f"[PAGE_{requested_page}]"
+            page_chunks = [c for c in all_chunks if page_marker in c["text"]]
+            if page_chunks:
+                logger.info("Page filter: keeping %d chunks for page %d", len(page_chunks), requested_page)
+                all_chunks = page_chunks
+            else:
+                logger.info("Page filter: no chunks found for page %d, using all chunks", requested_page)
+        # ─────────────────────────────────────────────────────────────────────
+
         top_k_doc = min(self._get_config_value("TOP_K_DOC_CHUNKS", 12), len(all_chunks))
         chunks_to_use = all_chunks
         if len(all_chunks) > MAX_DOC_CHUNKS_TO_EMBED:
@@ -329,13 +342,39 @@ Always: Understand what the user is asking. Prefer the document content when the
 
         return self._format_document_context(selected)
 
+    def _detect_page_request(self, query: str) -> Optional[int]:
+        """Return the 1-based page number if the user asked about a specific page, else None."""
+        import re as _re
+        patterns = [
+            r"page\s+(\d+)",
+            r"(\d+)(?:st|nd|rd|th)?\s+page",
+            r"pg\.?\s*(\d+)",
+        ]
+        q = (query or "").strip().lower()
+        for pat in patterns:
+            m = _re.search(pat, q)
+            if m:
+                try:
+                    return int(m.group(1))
+                except ValueError:
+                    pass
+        return None
+
     def _format_document_context(self, chunks: List[Dict[str, str]]) -> str:
         """Format retrieved document chunks for the response."""
+        import re as _re
         if not chunks:
             return ""
         lines = ["CONTENT FROM UPLOADED FILES (use this to answer questions about the attached documents):"]
         for i, item in enumerate(chunks, 1):
-            lines.append(f"\n[{item.get('filename', 'document')} - excerpt {i}]:\n{item.get('text', '')}")
+            text = item.get("text", "")
+            filename = item.get("filename", "document")
+            # Extract page tag if present in chunk text
+            m = _re.match(r"\[PAGE_(\d+)\]", text)
+            page_label = f" (Page {m.group(1)})" if m else ""
+            # Strip page marker from displayed text so it is clean
+            clean_text = _re.sub(r"^\[PAGE_\d+\]\n?", "", text)
+            lines.append(f"\n[{filename}{page_label} - excerpt {i}]:\n{clean_text}")
         return "\n".join(lines)
 
     def _format_products_context(self, products: List[Dict]) -> str:
@@ -370,6 +409,7 @@ Always: Understand what the user is asking. Prefer the document content when the
         products_context: str,
         document_context: str,
         document_only: bool = False,
+        requested_page: Optional[int] = None,
     ) -> List[Dict[str, str]]:
         """Build messages for the LLM. document_only=True: answer only from document; do not assume aluminum."""
         context_parts = []
@@ -382,9 +422,15 @@ Always: Understand what the user is asking. Prefer the document content when the
         user_content = f"Question: {query.strip()}"
         if context_block:
             if document_only:
+                page_instruction = (
+                    f"IMPORTANT: The user is asking specifically about page {requested_page} of the document. "
+                    f"Answer ONLY using the content from page {requested_page} provided below. "
+                    if requested_page else ""
+                )
                 user_content += (
                     "\n\nDocument content (from the user's uploaded file):\n"
                     f"{context_block}\n\n"
+                    f"{page_instruction}"
                     "Instructions: Answer ONLY from this document. Do not assume the document is about aluminum. "
                     "If the document is not about aluminum products, say so clearly and summarize what it is actually about. "
                     "Be accurate and concise."
@@ -397,6 +443,7 @@ Always: Understand what the user is asking. Prefer the document content when the
                     "If something is not covered, say you don't have that information."
                 )
         return [{"role": "user", "content": user_content}]
+
 
     def _create_response(
         self,
@@ -411,8 +458,10 @@ Always: Understand what the user is asking. Prefer the document content when the
         for stronger document QA. Otherwise uses LOCAL_LLM (transformers) or template fallback.
         """
         document_only = bool(document_context and not context.strip())
+        requested_page = self._detect_page_request(query)
         messages = self._build_llm_messages(
-            query, context, document_context, document_only=document_only
+            query, context, document_context, document_only=document_only,
+            requested_page=requested_page,
         )
         use_ollama_for_docs = getattr(self.config, "USE_OLLAMA_FOR_DOCUMENTS", False)
         ollama_base = getattr(self.config, "OLLAMA_BASE_URL", "http://localhost:11434")
