@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import './Chatbot.css';
 import { CHAT_API_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
@@ -6,6 +6,12 @@ import ReactMarkdown from 'react-markdown';
 
 const generateSessionId = () =>
   `chat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+
+/** Derive a short human-readable REF ID from a session_id */
+const toRefId = (sessionId) => {
+  const clean = (sessionId || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+  return 'REF-' + clean.slice(-8).padStart(8, '0');
+};
 
 const ACCEPT_FILES = '.pdf,.png,.jpg,.jpeg,.gif,.webp';
 const MAX_FILE_SIZE_MB = 10;
@@ -18,7 +24,7 @@ const Chatbot = () => {
     {
       id: 1,
       from: 'bot',
-      text: 'Hi, I’m the AAW assistant. Ask me about aluminium products, production, or this portal. You can also attach a PDF or image and I’ll read its content.',
+      text: 'Hi, I\'m the AAW assistant. Ask me about aluminium products, production, or this portal. You can also attach a PDF or image and I\'ll read its content.',
     },
   ]);
   const [input, setInput] = useState('');
@@ -28,18 +34,24 @@ const Chatbot = () => {
   const [sessions, setSessions] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
   const [stagedFile, setStagedFile] = useState(null);
+  const [showRefPopup, setShowRefPopup] = useState(false);
+  const [copySuccess, setCopySuccess] = useState(false);
+  const [historySearch, setHistorySearch] = useState('');
+
   const sessionIdRef = useRef(generateSessionId());
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
+  const refPopupRef = useRef(null);
+
+  const currentRefId = toRefId(sessionIdRef.current);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  const fetchSessionData = async () => {
+  const fetchSessionData = useCallback(async () => {
     try {
       let currentSessionId = sessionIdRef.current;
-      
       if (token) {
         const sessRes = await fetch(`${CHAT_API_URL}/sessions`, {
           headers: { Authorization: `Bearer ${token}` }
@@ -50,7 +62,6 @@ const Chatbot = () => {
           if (sessData.sessions.length > 0) {
             currentSessionId = sessData.sessions[0].session_id;
             sessionIdRef.current = currentSessionId;
-            
             const histRes = await fetch(`${CHAT_API_URL}/history?session_id=${encodeURIComponent(currentSessionId)}`, {
               headers: { Authorization: `Bearer ${token}` }
             });
@@ -66,10 +77,8 @@ const Chatbot = () => {
           }
         }
       }
-
       const headers = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
-
       const attRes = await fetch(
         `${CHAT_API_URL}/sessions/${encodeURIComponent(currentSessionId)}/attachments`,
         { headers }
@@ -78,10 +87,8 @@ const Chatbot = () => {
       if (attData.success && Array.isArray(attData.attachments)) {
         setAttachments(attData.attachments);
       }
-    } catch (_) {
-      // ignore
-    }
-  };
+    } catch (_) { /* ignore */ }
+  }, [token]);
 
   const loadSession = async (sid) => {
     sessionIdRef.current = sid;
@@ -104,7 +111,6 @@ const Chatbot = () => {
       } else {
         setMessages([]);
       }
-      
       const attRes = await fetch(
         `${CHAT_API_URL}/sessions/${encodeURIComponent(sid)}/attachments`,
         { headers: token ? { Authorization: `Bearer ${token}` } : {} }
@@ -126,18 +132,68 @@ const Chatbot = () => {
       {
         id: 1,
         from: 'bot',
-        text: 'Hi, I’m the AAW assistant. Ask me about aluminium products, production, or this portal. You can also attach a PDF or image and I’ll read its content.',
+        text: 'Hi, I\'m the AAW assistant. Ask me about aluminium products, production, or this portal. You can also attach a PDF or image and I\'ll read its content.',
       },
     ]);
     setAttachments([]);
     setStagedFile(null);
     setShowHistory(false);
+    setShowRefPopup(false);
   };
+
+  const deleteSession = async (sid, e) => {
+    e.stopPropagation(); // Don't trigger loadSession
+    if (!window.confirm('Delete this conversation?')) return;
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const res = await fetch(`${CHAT_API_URL}/sessions/${encodeURIComponent(sid)}`, {
+        method: 'DELETE',
+        headers,
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSessions(prev => prev.filter(s => s.session_id !== sid));
+        // If currently viewing the deleted session, start new chat
+        if (sessionIdRef.current === sid) startNewChat();
+      }
+    } catch (_) {
+      alert('Could not delete conversation. Please try again.');
+    }
+  };
+
+  const copyRefId = async () => {
+    try {
+      await navigator.clipboard.writeText(currentRefId);
+      setCopySuccess(true);
+      setTimeout(() => setCopySuccess(false), 2000);
+    } catch (_) {
+      // Fallback for older browsers
+      const el = document.createElement('textarea');
+      el.value = currentRefId;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand('copy');
+      document.body.removeChild(el);
+      setCopySuccess(true);
+      setTimeout(() => setCopySuccess(false), 2000);
+    }
+  };
+
+  // Close ref popup when clicking outside
+  useEffect(() => {
+    const handler = (e) => {
+      if (refPopupRef.current && !refPopupRef.current.contains(e.target)) {
+        setShowRefPopup(false);
+      }
+    };
+    if (showRefPopup) document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showRefPopup]);
 
   useEffect(() => {
     if (open) fetchSessionData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, token]);
+  }, [open, token, fetchSessionData]);
 
   const onFileChange = (e) => {
     const file = e.target.files?.[0];
@@ -164,7 +220,7 @@ const Chatbot = () => {
     let trimmed = input.trim();
     if ((!trimmed && !stagedFile) || loading || uploading) return;
 
-    let attachedFilename = "";
+    let attachedFilename = '';
 
     if (stagedFile) {
       setUploading(true);
@@ -172,10 +228,8 @@ const Chatbot = () => {
       const formData = new FormData();
       formData.append('file', stagedFile);
       formData.append('session_id', sessionIdRef.current);
-
       const headers = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
-
       try {
         const res = await fetch(`${CHAT_API_URL}/upload`, {
           method: 'POST',
@@ -221,33 +275,22 @@ const Chatbot = () => {
       });
 
       let data = {};
-      try {
-        data = await res.json();
-      } catch (_) {
-        data = {};
-      }
+      try { data = await res.json(); } catch (_) { data = {}; }
 
       if (!res.ok) {
-        appendMessage(
-          data.error || 'Something went wrong. Please try again.',
-          'bot',
-        );
+        appendMessage(data.error || 'Something went wrong. Please try again.', 'bot');
         return;
       }
 
       if (data.success !== false && data.message) {
         appendMessage(data.message, 'bot');
       } else {
-        appendMessage(
-          data.error || 'Could not get a response. Please try again.',
-          'bot',
-        );
+        appendMessage(data.error || 'Could not get a response. Please try again.', 'bot');
       }
     } catch (err) {
       const msg =
         err.message === 'Failed to fetch'
-          ? 'Cannot reach the chat server. Make sure the backend is running at ' +
-            CHAT_API_URL
+          ? 'Cannot reach the chat server. Make sure the backend is running at ' + CHAT_API_URL
           : err.message || 'Network error. Please try again.';
       appendMessage(msg, 'bot');
     } finally {
@@ -257,11 +300,18 @@ const Chatbot = () => {
   };
 
   const handleKeyDown = (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      sendMessage();
-    }
+    if (e.key === 'Enter') { e.preventDefault(); sendMessage(); }
   };
+
+  // Filter sessions by search query (title or ref_id)
+  const filteredSessions = sessions.filter(s => {
+    if (!historySearch.trim()) return true;
+    const q = historySearch.trim().toLowerCase();
+    const title = (s.title || 'Conversation').toLowerCase();
+    const sid = (s.session_id || '').toLowerCase();
+    const ref = toRefId(s.session_id).toLowerCase();
+    return title.includes(q) || ref.includes(q) || sid.includes(q);
+  });
 
   return (
     <>
@@ -272,10 +322,7 @@ const Chatbot = () => {
               type="button"
               onClick={() => {
                 if (showHistory) setShowHistory(false);
-                else {
-                  setShowHistory(true);
-                  fetchSessionData();
-                }
+                else { setShowHistory(true); fetchSessionData(); }
               }}
               aria-label="Toggle History"
               title="Chat History"
@@ -284,13 +331,38 @@ const Chatbot = () => {
             </button>
             <h4>AAW Assistant</h4>
           </div>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <button
-              type="button"
-              onClick={startNewChat}
-              aria-label="Start new chat"
-              title="New Chat"
-            >
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            {/* REF.ID Button */}
+            <div className="ref-id-wrapper" ref={refPopupRef}>
+              <button
+                type="button"
+                className="ref-id-btn"
+                onClick={() => setShowRefPopup(p => !p)}
+                title="View Reference ID"
+                aria-label="Reference ID"
+              >
+                <i className="fa fa-tag" style={{ fontSize: '11px', marginRight: '3px' }} />
+                REF.ID
+              </button>
+              {showRefPopup && (
+                <div className="ref-id-popup">
+                  <div className="ref-id-popup-label">Chat Reference ID</div>
+                  <div className="ref-id-popup-value">{currentRefId}</div>
+                  <button
+                    className="ref-id-copy-btn"
+                    onClick={copyRefId}
+                    type="button"
+                  >
+                    {copySuccess
+                      ? <><i className="fa fa-check" /> Copied!</>
+                      : <><i className="fa fa-copy" /> Copy</>
+                    }
+                  </button>
+                  <div className="ref-id-hint">Use this ID to find this conversation in history.</div>
+                </div>
+              )}
+            </div>
+            <button type="button" onClick={startNewChat} aria-label="Start new chat" title="New Chat">
               <i className="fa fa-plus" style={{ fontSize: '14px' }} />
             </button>
             <button
@@ -306,19 +378,48 @@ const Chatbot = () => {
             </button>
           </div>
         </div>
+
         {showHistory ? (
           <div className="chatbot-history-view">
-            {sessions.map(s => (
+            {/* Search bar */}
+            <div className="history-search-wrap">
+              <i className="fa fa-search history-search-icon" />
+              <input
+                className="history-search"
+                type="text"
+                placeholder="Search by title or REF.ID…"
+                value={historySearch}
+                onChange={e => setHistorySearch(e.target.value)}
+              />
+              {historySearch && (
+                <button className="history-search-clear" onClick={() => setHistorySearch('')} title="Clear search">
+                  &times;
+                </button>
+              )}
+            </div>
+
+            {filteredSessions.map(s => (
               <div key={s.session_id} className="history-item" onClick={() => loadSession(s.session_id)}>
-                <div className="history-title">{s.title || 'Conversation'}</div>
-                <div className="history-date">
-                  {new Date(s.last_message_at || s.started_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                <div className="history-item-main">
+                  <div className="history-title">{s.title || 'Conversation'}</div>
+                  <div className="history-ref">{toRefId(s.session_id)}</div>
+                  <div className="history-date">
+                    {new Date(s.last_message_at || s.started_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                  </div>
                 </div>
+                <button
+                  className="history-delete-btn"
+                  onClick={(e) => deleteSession(s.session_id, e)}
+                  title="Delete this conversation"
+                  aria-label="Delete conversation"
+                >
+                  <i className="fa fa-trash" />
+                </button>
               </div>
             ))}
-            {sessions.length === 0 && (
-              <div style={{ padding: '20px', textAlign: 'center', color: '#888' }}>
-                No previous chats found.
+            {filteredSessions.length === 0 && (
+              <div className="history-empty">
+                {historySearch ? `No results for "${historySearch}".` : 'No previous chats found.'}
               </div>
             )}
           </div>
@@ -384,11 +485,7 @@ const Chatbot = () => {
                 onKeyDown={handleKeyDown}
                 disabled={loading}
               />
-              <button
-                type="button"
-                onClick={sendMessage}
-                disabled={loading}
-              >
+              <button type="button" onClick={sendMessage} disabled={loading}>
                 {uploading ? 'Wait' : 'Send'}
               </button>
             </div>
@@ -403,7 +500,7 @@ const Chatbot = () => {
         title="Chat with AAW assistant"
         onClick={() => {
           setOpen((prev) => !prev);
-          if (open && isExpanded) setIsExpanded(false); // Reset expand on close
+          if (open && isExpanded) setIsExpanded(false);
         }}
       >
         <i className="fa fa-comments" />
@@ -413,4 +510,3 @@ const Chatbot = () => {
 };
 
 export default Chatbot;
-
