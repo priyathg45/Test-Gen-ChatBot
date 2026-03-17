@@ -46,12 +46,14 @@ def create_app():
     from .routes.chat import chat_bp
     from .routes.logs import logs_bp
     from .routes.chatbot import chatbot_bp
+    from .routes.jobs import jobs_bp
 
     app.register_blueprint(auth_bp, url_prefix='/auth')
     app.register_blueprint(users_bp, url_prefix='/users')
     app.register_blueprint(chat_bp, url_prefix='/chat')
     app.register_blueprint(logs_bp, url_prefix='/logs')
     app.register_blueprint(chatbot_bp, url_prefix='/admin-bot')
+    app.register_blueprint(jobs_bp, url_prefix='/jobs')
 
     return app
 

@@ -628,6 +628,242 @@ def delete_session(session_id):
             'error': str(e)
         }), 500
 
+@app.route('/jobs', methods=['GET'])
+def list_jobs():
+    """List all jobs for the current user."""
+    try:
+        from src.api.jobs import get_jobs
+        payload = _current_user()
+        user_id = payload['sub'] if payload else None
+        jobs_coll = mongo_db['jobs'] if mongo_db is not None else None
+        if jobs_coll is None:
+            return jsonify({'success': False, 'error': 'Storage unavailable'}), 503
+        jobs = get_jobs(jobs_coll, user_id=user_id)
+        return jsonify({'success': True, 'jobs': jobs, 'total': len(jobs)}), 200
+    except Exception as e:
+        logger.error("list_jobs error: %s", e)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/jobs', methods=['POST'])
+def create_job_route():
+    """Create a new job."""
+    try:
+        from src.api.jobs import create_job
+        payload = _current_user()
+        user_id = payload['sub'] if payload else None
+        data = request.get_json() or {}
+        jobs_coll = mongo_db['jobs'] if mongo_db is not None else None
+        if jobs_coll is None:
+            return jsonify({'success': False, 'error': 'Storage unavailable'}), 503
+        job = create_job(jobs_coll, data, user_id=user_id)
+        return jsonify({'success': True, 'job': job}), 201
+    except Exception as e:
+        logger.error("create_job error: %s", e)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/jobs/<string:job_id>', methods=['GET'])
+def get_job_route(job_id):
+    """Get a single job by ID."""
+    try:
+        from src.api.jobs import get_job
+        jobs_coll = mongo_db['jobs'] if mongo_db is not None else None
+        if jobs_coll is None:
+            return jsonify({'success': False, 'error': 'Storage unavailable'}), 503
+        job = get_job(jobs_coll, job_id)
+        if not job:
+            return jsonify({'success': False, 'error': 'Job not found'}), 404
+        return jsonify({'success': True, 'job': job}), 200
+    except Exception as e:
+        logger.error("get_job error: %s", e)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/jobs/<string:job_id>', methods=['PUT'])
+def update_job_route(job_id):
+    """Update a job."""
+    try:
+        from src.api.jobs import update_job
+        data = request.get_json() or {}
+        jobs_coll = mongo_db['jobs'] if mongo_db is not None else None
+        if jobs_coll is None:
+            return jsonify({'success': False, 'error': 'Storage unavailable'}), 503
+        job = update_job(jobs_coll, job_id, data)
+        if not job:
+            return jsonify({'success': False, 'error': 'Job not found'}), 404
+        return jsonify({'success': True, 'job': job}), 200
+    except Exception as e:
+        logger.error("update_job error: %s", e)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/jobs/<string:job_id>', methods=['DELETE'])
+def delete_job_route(job_id):
+    """Delete a job."""
+    try:
+        from src.api.jobs import delete_job
+        jobs_coll = mongo_db['jobs'] if mongo_db is not None else None
+        if jobs_coll is None:
+            return jsonify({'success': False, 'error': 'Storage unavailable'}), 503
+        deleted = delete_job(jobs_coll, job_id)
+        return jsonify({'success': True, 'deleted': deleted}), 200
+    except Exception as e:
+        logger.error("delete_job error: %s", e)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/jobs/extract-from-pdf', methods=['POST'])
+def extract_job_from_pdf():
+    """Use the LLM to extract job fields from session PDFs."""
+    try:
+        data = request.get_json() or {}
+        session_id = (data.get('session_id') or '').strip()
+        if not session_id or mongo_db is None:
+            return jsonify({'success': False, 'error': 'session_id and MongoDB required'}), 400
+
+        # Collect all extracted text from this session's attachments
+        attachments = get_attachments_for_session(
+            mongo_db,
+            app.config.get('MONGO_ATTACHMENTS_COLLECTION', 'chat_attachments'),
+            session_id,
+        )
+        all_text = "\n\n".join(
+            att.get('extracted_text', '') for att in attachments if att.get('extracted_text')
+        ).strip()
+
+        if not all_text:
+            return jsonify({'success': False, 'error': 'No text could be extracted from attached PDFs'}), 422
+
+        # Limit text to avoid huge prompts
+        truncated = all_text[:6000]
+
+        ollama_base = getattr(chatbot.config, 'OLLAMA_BASE_URL', 'http://localhost:11434')
+        ollama_model = getattr(chatbot.config, 'OLLAMA_MODEL', 'llama3.2')
+        use_ollama = getattr(chatbot.config, 'USE_OLLAMA_FOR_DOCUMENTS', False)
+
+        prompt = f"""You are a job intake assistant for an aluminium window/door installation company.
+Read the document content below and extract relevant job details.
+Return ONLY a valid JSON object with these exact keys (leave empty string if not found):
+{{
+  "title": "brief job title",
+  "client_name": "client full name",
+  "client_contact": "email or phone",
+  "site_address": "full site address",
+  "start_date": "YYYY-MM-DD or empty",
+  "end_date": "YYYY-MM-DD or empty",
+  "window_door_type": "type of windows/doors",
+  "quantity": "number or description",
+  "description": "brief job description",
+  "notes": "any special notes or requirements"
+}}
+
+DOCUMENT CONTENT:
+{truncated}
+
+Respond ONLY with the JSON object, no other text."""
+
+        import json as _json
+        extracted = {}
+
+        if use_ollama:
+            try:
+                from src.chatbot.ollama_llm import is_ollama_available
+                import urllib.request as _req
+                if is_ollama_available(ollama_base):
+                    body = {
+                        "model": ollama_model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {"temperature": 0.1, "num_predict": 512},
+                    }
+                    req = _req.Request(
+                        f"{ollama_base.rstrip('/')}/api/generate",
+                        data=_json.dumps(body).encode(),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with _req.urlopen(req, timeout=60) as resp:
+                        raw = _json.loads(resp.read().decode())
+                        text = (raw.get("response") or "").strip()
+                        # Extract JSON from response
+                        import re as _re
+                        m = _re.search(r'\{[\s\S]*\}', text)
+                        if m:
+                            extracted = _json.loads(m.group(0))
+            except Exception as ex:
+                logger.warning("Ollama extraction failed: %s", ex)
+
+        return jsonify({'success': True, 'fields': extracted}), 200
+
+    except Exception as e:
+        logger.error("extract_job_from_pdf error: %s", e)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/upload-multiple', methods=['POST'])
+def upload_multiple_files():
+    """Upload multiple PDFs or images for a session."""
+    try:
+        files = request.files.getlist('files')
+        if not files:
+            return jsonify({'success': False, 'error': 'No files in request'}), 400
+
+        session_id = request.form.get('session_id', '').strip()
+        if not session_id:
+            return jsonify({'success': False, 'error': 'session_id is required'}), 400
+
+        if mongo_db is None:
+            return jsonify({'success': False, 'error': 'File storage not available'}), 503
+
+        payload = _current_user()
+        user_id = payload['sub'] if payload else None
+        max_size = app.config.get('MAX_UPLOAD_SIZE', 10 * 1024 * 1024)
+
+        results = []
+        errors = []
+        for file in files:
+            if not file or not file.filename:
+                continue
+            filename = file.filename
+            content_type = file.content_type or content_type_from_filename(filename)
+            if not is_allowed_file(filename, content_type):
+                errors.append(f"{filename}: file type not allowed")
+                continue
+            file_bytes = file.read()
+            if len(file_bytes) > max_size:
+                errors.append(f"{filename}: too large (max {max_size // (1024*1024)} MB)")
+                continue
+            doc = save_attachment(
+                database=mongo_db,
+                attachments_collection_name=app.config.get('MONGO_ATTACHMENTS_COLLECTION', 'chat_attachments'),
+                session_id=session_id,
+                filename=filename,
+                content_type=content_type,
+                file_bytes=file_bytes,
+                user_id=user_id,
+            )
+            if doc:
+                results.append({
+                    'id': str(doc['_id']),
+                    'filename': doc['filename'],
+                    'content_type': doc['content_type'],
+                    'extracted_length': len(doc.get('extracted_text', '')),
+                })
+            else:
+                errors.append(f"{filename}: save failed")
+
+        return jsonify({
+            'success': True,
+            'uploaded': results,
+            'errors': errors,
+            'total_uploaded': len(results),
+        }), 201
+    except Exception as e:
+        logger.error("upload_multiple error: %s", e)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/products', methods=['GET'])
 def get_products():
     """Get all products."""

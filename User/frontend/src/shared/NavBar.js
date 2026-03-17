@@ -59,6 +59,11 @@ const NavBar = () => {
               <NavLink to="/contact" className="nav-item nav-link" onClick={() => setMenuOpen(false)}>
                 Contact
               </NavLink>
+              {user && (
+                <NavLink to="/jobs" className="nav-item nav-link" onClick={() => setMenuOpen(false)}>
+                  Jobs
+                </NavLink>
+              )}
             </div>
             <div className="ml-auto d-flex align-items-center gap-2">
               {user ? (
