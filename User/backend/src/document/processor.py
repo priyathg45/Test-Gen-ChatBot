@@ -58,16 +58,43 @@ def _get_pdf_executor() -> ThreadPoolExecutor:
         _pdf_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pdf_extract")
     return _pdf_executor
 
+def _call_vision_llm_single(base_url: str, model: str, image_b64: str, page_num: int, filename: str) -> str:
+    """Call the Ollama vision LLM for a single page/image. Returns extracted text for that page."""
+    prompt = (
+        f"You are a document extraction assistant reading page {page_num} of a document.\n"
+        "1. Extract ALL text from this page exactly as it appears.\n"
+        "2. If there are charts, tables, diagrams, or images, describe them in detail.\n"
+        "3. Preserve headings, bullet points, and table structure where possible.\n"
+        "4. Do NOT add any commentary — just return the extracted/described content of this page."
+    )
+    body = {
+        "model": model,
+        "prompt": prompt,
+        "images": [image_b64],
+        "stream": False,
+        "options": {"temperature": 0.05, "num_predict": 1500},
+    }
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/api/generate",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=90) as resp:
+        data = json.loads(resp.read().decode())
+        return (data.get("response") or "").strip()
+
+
 def extract_content_with_vision_llm(content: bytes, filename: str, is_pdf: bool) -> str:
-    """Uses Ollama Vision LLM (e.g. Llama 4 Scout) to extract text and describe images/diagrams."""
+    """Uses Ollama Vision LLM to extract text page-by-page with guaranteed [PAGE_X] markers."""
     try:
         from src.config import config
         if not getattr(config, "USE_VISION_LLM_FOR_EXTRACTION", False):
             return ""
-        
+
         base_url = getattr(config, "OLLAMA_BASE_URL", "http://localhost:11434")
         model = getattr(config, "OLLAMA_VISION_MODEL", "llama4-scout")
-        
+
         # Check if Ollama is reachable
         try:
             req = urllib.request.Request(f"{base_url.rstrip('/')}/api/tags", method="GET")
@@ -76,60 +103,48 @@ def extract_content_with_vision_llm(content: bytes, filename: str, is_pdf: bool)
                     return ""
         except Exception:
             return ""
-        
-        images_b64 = []
+
         if is_pdf:
             if not HAS_PDF2IMAGE:
                 logger.warning("Vision LLM: pdf2image not installed, cannot process PDF images.")
                 return ""
             try:
-                # PDF to images (first 10 pages only for speed)
-                pdf_images = convert_from_bytes(content, first_page=1, last_page=10, dpi=150)
-                for img in pdf_images:
-                    buffered = io.BytesIO()
-                    img.save(buffered, format="JPEG")
-                    images_b64.append(base64.b64encode(buffered.getvalue()).decode("utf-8"))
+                pdf_images = convert_from_bytes(content, first_page=1, last_page=30, dpi=120)
             except Exception as e:
                 logger.warning("Vision LLM PDF conversion failed: %s", e)
                 return ""
-        else:
-            images_b64.append(base64.b64encode(content).decode("utf-8"))
-            
-        if not images_b64:
-            return ""
 
-        prompt = (
-            "You are a document extraction assistant. Please read the provided document/image. "
-            "Extract all textual content accurately. If there are any images, charts, plots, or diagrams, "
-            "describe them in detail (e.g., what the chart measures, the visual contents of the image) "
-            "so the information is preserved as text. "
-            "IMPORTANT: If there are multiple pages/images, you MUST explicitly label the start of each page's content with [PAGE_X] where X is the page number (starting from 1)."
-        )
-        
-        body = {
-            "model": model,
-            "prompt": prompt,
-            "images": images_b64,
-            "stream": False,
-            "options": {"temperature": 0.1, "num_predict": 1024},
-        }
-        
-        req = urllib.request.Request(
-            f"{base_url.rstrip('/')}/api/generate",
-            data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        logger.info(f"Sending vision extraction request to {model} for {filename}...")
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode())
-            result = (data.get("response") or "").strip()
+            page_texts: List[str] = []
+            for page_num, img in enumerate(pdf_images, start=1):
+                try:
+                    buffered = io.BytesIO()
+                    img.save(buffered, format="JPEG", quality=85)
+                    image_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+                    logger.info("Vision LLM: processing page %d/%d of %s", page_num, len(pdf_images), filename)
+                    page_text = _call_vision_llm_single(base_url, model, image_b64, page_num, filename)
+                    if page_text:
+                        page_texts.append(f"[PAGE_{page_num}]\n{page_text}")
+                    else:
+                        page_texts.append(f"[PAGE_{page_num}]\n(No text extracted from this page)")
+                except Exception as e:
+                    logger.warning("Vision LLM failed on page %d of %s: %s", page_num, filename, e)
+                    page_texts.append(f"[PAGE_{page_num}]\n(Extraction failed for this page)")
+
+            if page_texts:
+                combined = "\n\n".join(page_texts)
+                logger.info("Vision LLM extracted %d pages / %d characters from %s", len(page_texts), len(combined), filename)
+                return combined
+            return ""
+        else:
+            # Single image
+            image_b64 = base64.b64encode(content).decode("utf-8")
+            result = _call_vision_llm_single(base_url, model, image_b64, 1, filename)
             if result:
-                logger.info(f"Vision LLM extracted {len(result)} characters from {filename}")
-                return result
-        return ""
+                logger.info("Vision LLM extracted %d characters from image %s", len(result), filename)
+            return result
+
     except Exception as e:
-        logger.warning(f"Vision LLM extraction failed for {filename}: {e}")
+        logger.warning("Vision LLM extraction failed for %s: %s", filename, e)
         return ""
 
 def _extract_text_from_pdf_impl(content: bytes, filename: str, max_pages: int) -> str:

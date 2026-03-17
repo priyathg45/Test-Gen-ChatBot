@@ -82,22 +82,37 @@ class AluminiumChatBot:
                 logger.error(f"Failed to write message to MongoDB: {exc}")
     
     def _create_system_prompt(self) -> str:
-        """
-        Create system prompt for the chatbot.
-        """
-        return """You are a helpful assistant. You do two things:
+        """Create system prompt for the chatbot."""
+        return """You are AAW Assistant — a helpful, precise AI for Active Aluminium Windows.
 
-1) WHEN THE USER ASKS ABOUT AN UPLOADED DOCUMENT (e.g. summarize, explain, what does it say):
-   - Answer ONLY from the document content provided. Do not assume the document is about aluminum or any specific topic.
-   - If the document is NOT about aluminum products, say so clearly and summarize what the document is actually about (e.g. "This document is about ...").
-   - If the document IS about aluminum/jobs/quotations, you can use that and also refer to product/job data when the user asks for budget or quotation.
-   - Be accurate, concise, and faithful to the document. Do not invent content or force aluminum into the answer when the document is about something else.
+## CORE RULES
 
-2) WHEN THE USER ASKS ABOUT ALUMINUM PRODUCTS OR JOBS (without a document, or explicitly about products):
-   - Use the product/job knowledge base to answer: specifications, applications, prices, quotations, jobs (AAW).
-   - Be accurate and reference specific details when provided.
+### When answering from an uploaded document:
+- ALWAYS state clearly which page(s) you are reading from, e.g.: **📄 Reading from Page 3 of report.pdf**
+- Structure your answer using Markdown with headings, bullet points, and tables — never a wall of text.
+- Keep each section concise and focused.
+- If the document is NOT about aluminium, say so clearly and summarise what it is actually about.
+- Do NOT invent content; be faithful to what is in the document.
 
-Always: Understand what the user is asking. Prefer the document content when they are asking about the uploaded file. Be honest if you don't have the information."""
+### When answering about aluminium products (no document upload):
+- Reference specific product names, specifications, or prices from the knowledge base.
+- Use bullet points or tables to compare products when relevant.
+
+### Formatting rules you MUST follow every response:
+1. Use **bold** for key terms, labels, and product names.
+2. Use bullet lists for multi-item information.
+3. Use numbered lists for steps or ordered information.
+4. Use > blockquotes for important notes or warnings.
+5. Use tables when presenting comparative data.
+6. Add a `---` separator before a "Summary" or "Key Takeaways" section if the response is long.
+7. Always end document answers with: **📌 Source: Page X of [filename]** (on its own line).
+
+### What you must NEVER do:
+- Never write long unbroken paragraphs.
+- Never say "this document seems to be about aluminium" when it clearly is not.
+- Never produce a response without clear structure.
+
+Be clear, concise, and user-friendly."""
 
     def _get_config_value(self, key: str, default=None):
         """Get config value from object or mapping."""
@@ -361,20 +376,33 @@ Always: Understand what the user is asking. Prefer the document content when the
         return None
 
     def _format_document_context(self, chunks: List[Dict[str, str]]) -> str:
-        """Format retrieved document chunks for the response."""
+        """Format retrieved document chunks for the LLM with clear page section labels."""
         import re as _re
         if not chunks:
             return ""
-        lines = ["CONTENT FROM UPLOADED FILES (use this to answer questions about the attached documents):"]
-        for i, item in enumerate(chunks, 1):
+
+        # Group chunks by (filename, page_num) to produce clean sections
+        from collections import OrderedDict
+        sections: OrderedDict = OrderedDict()
+        for item in chunks:
             text = item.get("text", "")
             filename = item.get("filename", "document")
-            # Extract page tag if present in chunk text
-            m = _re.match(r"\[PAGE_(\d+)\]", text)
-            page_label = f" (Page {m.group(1)})" if m else ""
-            # Strip page marker from displayed text so it is clean
-            clean_text = _re.sub(r"^\[PAGE_\d+\]\n?", "", text)
-            lines.append(f"\n[{filename}{page_label} - excerpt {i}]:\n{clean_text}")
+            m = _re.match(r"\[PAGE_(\d+)\]\n?", text)
+            page_num = int(m.group(1)) if m else 0
+            clean_text = _re.sub(r"^\[PAGE_\d+\]\n?", "", text).strip()
+            key = (filename, page_num)
+            if key not in sections:
+                sections[key] = []
+            sections[key].append(clean_text)
+
+        lines = ["=== DOCUMENT CONTEXT (extracted from uploaded file) ===\n"]
+        for (filename, page_num), texts in sections.items():
+            page_label = f"Page {page_num}" if page_num else "Unknown page"
+            lines.append(f"--- {page_label} of '{filename}' ---")
+            lines.append("\n".join(t for t in texts if t))
+            lines.append("")  # blank line between sections
+
+        lines.append("=== END OF DOCUMENT CONTEXT ===")
         return "\n".join(lines)
 
     def _format_products_context(self, products: List[Dict]) -> str:
@@ -411,7 +439,9 @@ Always: Understand what the user is asking. Prefer the document content when the
         document_only: bool = False,
         requested_page: Optional[int] = None,
     ) -> List[Dict[str, str]]:
-        """Build messages for the LLM. document_only=True: answer only from document; do not assume aluminum."""
+        """Build messages for the LLM. document_only=True: answer only from document."""
+        import re as _re
+
         context_parts = []
         if document_context:
             context_parts.append(document_context.strip())
@@ -419,29 +449,58 @@ Always: Understand what the user is asking. Prefer the document content when the
             context_parts.append(products_context.strip())
         context_block = "\n\n".join(context_parts).strip()
 
-        user_content = f"Question: {query.strip()}"
+        # Try to extract filename from context header
+        file_match = _re.search(r"\[([^\[\]]+?)\s*(?:\(Page \d+\))?", document_context or "")
+        filename_hint = file_match.group(1).strip() if file_match else "the uploaded document"
+
         if context_block:
-            if document_only:
-                page_instruction = (
-                    f"IMPORTANT: The user is asking specifically about page {requested_page} of the document. "
-                    f"Answer ONLY using the content from page {requested_page} provided below. "
-                    if requested_page else ""
+            if requested_page:
+                # User asked about a specific page — give very explicit instructions
+                user_content = (
+                    f"The user is asking: \"{query.strip()}\"\n\n"
+                    f"You are reading **Page {requested_page}** of **{filename_hint}**.\n\n"
+                    f"The extracted content from Page {requested_page} is provided below.\n\n"
+                    "---\n"
+                    f"{context_block}\n"
+                    "---\n\n"
+                    f"## Your Task\n"
+                    f"Answer the user's question **using ONLY the content from Page {requested_page}** above.\n\n"
+                    "**Format your response as follows:**\n"
+                    f"1. Start with: **📄 Page {requested_page} — {filename_hint}**\n"
+                    "2. Use headings, bullet points, or tables to organise the information clearly.\n"
+                    "3. Be concise — summarise and explain, don't just copy-paste raw text.\n"
+                    f"4. End with: **📌 Source: Page {requested_page} of {filename_hint}**\n\n"
+                    "If Page " + str(requested_page) + " has no relevant content for this question, say so clearly."
                 )
-                user_content += (
-                    "\n\nDocument content (from the user's uploaded file):\n"
-                    f"{context_block}\n\n"
-                    f"{page_instruction}"
-                    "Instructions: Answer ONLY from this document. Do not assume the document is about aluminum. "
-                    "If the document is not about aluminum products, say so clearly and summarize what it is actually about. "
-                    "Be accurate and concise."
+            elif document_only:
+                user_content = (
+                    f"The user is asking: \"{query.strip()}\"\n\n"
+                    f"The uploaded document content is provided below:\n\n"
+                    "---\n"
+                    f"{context_block}\n"
+                    "---\n\n"
+                    "**Format your response:**\n"
+                    "- State which page(s) you are reading from at the top.\n"
+                    "- Use headings and bullet points — not long paragraphs.\n"
+                    "- If the document covers multiple pages, organise your answer by page.\n"
+                    "- End with: **📌 Source: [filename, page numbers]**\n"
+                    "- Do NOT assume the document is about aluminium unless it clearly is."
                 )
             else:
-                user_content += (
-                    "\n\nContext (uploaded documents and/or product catalog):\n"
-                    f"{context_block}\n\n"
-                    "Use this context to answer. If the document is not about aluminum, do not force aluminum into the answer. "
-                    "If something is not covered, say you don't have that information."
+                user_content = (
+                    f"The user is asking: \"{query.strip()}\"\n\n"
+                    "Use the context below (uploaded documents and/or product catalog) to answer.\n\n"
+                    "---\n"
+                    f"{context_block}\n"
+                    "---\n\n"
+                    "**Formatting rules:**\n"
+                    "- Cite the page/source where relevant (e.g., '(Page 2)').\n"
+                    "- Use bullet points or tables for multi-item answers.\n"
+                    "- If something is not in the context, say you don't have that information."
                 )
+        else:
+            user_content = f"The user is asking: \"{query.strip()}\""
+
         return [{"role": "user", "content": user_content}]
 
 

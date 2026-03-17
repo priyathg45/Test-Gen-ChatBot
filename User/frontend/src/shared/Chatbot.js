@@ -30,7 +30,7 @@ const Chatbot = () => {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [attachments, setAttachments] = useState([]);
+  const [, setAttachments] = useState([]);
   const [sessions, setSessions] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
   const [stagedFile, setStagedFile] = useState(null);
