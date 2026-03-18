@@ -47,6 +47,8 @@ def get_all_jobs():
         user_cache = {}
         for job in jobs:
             uid = job.get("user_id")
+            if uid:
+                job["user_id"] = str(uid)
             if uid and uid not in user_cache:
                 try:
                     # Map full_name to username for frontend
@@ -63,6 +65,33 @@ def get_all_jobs():
         return jsonify({"success": True, "jobs": jobs, "total": len(jobs)}), 200
     except Exception as e:
         logger.error("get_all_jobs error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@jobs_bp.route('/user/<user_id>', methods=['GET'])
+def get_user_jobs(user_id):
+    """Return all jobs for a specific user."""
+    if not check_admin_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    try:
+        coll = _jobs_col()
+        # Handle both string and ObjectId user_id
+        query = {
+            "$or": [
+                {"user_id": user_id},
+                {"user_id": ObjectId(user_id) if ObjectId.is_valid(user_id) else None}
+            ]
+        }
+        jobs = list(coll.find(query, {"_id": 0}).sort("created_at", -1))
+        
+        # Ensure user_id is stringified
+        for job in jobs:
+            if "user_id" in job:
+                job["user_id"] = str(job["user_id"])
+                
+        return jsonify({"success": True, "jobs": jobs}), 200
+    except Exception as e:
+        logger.error("get_user_jobs error: %s", e)
         return jsonify({"error": str(e)}), 500
 
 

@@ -71,9 +71,8 @@ const UsersList = () => {
   return (
     <div>
       <div style={styles.header}>
-        <div>
+        <div style={{ visibility: 'hidden', pointerEvents: 'none' }}>
           <h1>User Management</h1>
-          <p>View, manage and monitor user accounts</p>
         </div>
         <div style={styles.searchBox}>
           <Search size={20} color="var(--text-secondary)" style={styles.searchIcon} />

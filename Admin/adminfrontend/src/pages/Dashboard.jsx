@@ -97,15 +97,6 @@ const Dashboard = () => {
 
   return (
     <div className="dashboard-container">
-      <div style={{ marginBottom: '2.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-        <div>
-          <h1 style={{ fontSize: '2.25rem', fontWeight: 800, letterSpacing: '-0.025em', marginBottom: '0.5rem' }}>Dashboard Overview</h1>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '1.05rem' }}>Real-time metrics and system health monitoring.</p>
-        </div>
-        <div style={{ textAlign: 'right', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-          Last updated: {new Date().toLocaleTimeString()}
-        </div>
-      </div>
 
       {/* Stat cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.5rem', marginBottom: '3rem' }}>

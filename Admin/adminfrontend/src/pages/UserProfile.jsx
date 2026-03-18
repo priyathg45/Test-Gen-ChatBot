@@ -4,7 +4,8 @@ import axios from 'axios';
 import { 
   ArrowLeft, Mail, Calendar, MessageCircle, Clock, 
   Briefcase, UserCheck, UserX, Trash2, ChevronRight, 
-  MessageSquare, Trash, Search, Paperclip, Download, Eye
+  MessageSquare, Trash, Search, Paperclip, Download, Eye,
+  Copy, Check, Filter
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -40,6 +41,8 @@ const UserProfile = () => {
   const [msgLoading, setMsgLoading] = useState(false);
   const [toggling, setToggling] = useState(false);
   const [sessionSearch, setSessionSearch] = useState('');
+  const [sessionFilter, setSessionFilter] = useState('all'); // 'all', 'today', 'week', 'month'
+  const [copiedId, setCopiedId] = useState(null);
   const [attachments, setAttachments] = useState([]);
   const [attLoading, setAttLoading] = useState(false);
 
@@ -69,6 +72,47 @@ const UserProfile = () => {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  const handleCopy = (id, e) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(toRefId(id));
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const getFilteredSessions = () => {
+    let filtered = sessions;
+
+    // Time filter
+    if (sessionFilter !== 'all') {
+      const now = new Date();
+      filtered = filtered.filter(s => {
+        const date = new Date(s.started_at);
+        if (sessionFilter === 'today') {
+          return date.toDateString() === now.toDateString();
+        } else if (sessionFilter === 'week') {
+          const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+          return date >= weekAgo;
+        } else if (sessionFilter === 'month') {
+          const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+          return date >= monthAgo;
+        }
+        return true;
+      });
+    }
+
+    // Search filter
+    if (sessionSearch) {
+      const search = sessionSearch.toLowerCase();
+      filtered = filtered.filter(s => 
+        (s.title || '').toLowerCase().includes(search) || 
+        (s.session_id || '').toLowerCase().includes(search) ||
+        toRefId(s.session_id).toLowerCase().includes(search)
+      );
+    }
+
+    return filtered;
+  };
 
   const loadSessionContent = async (sessionId) => {
     setActiveSession(sessionId);
@@ -148,10 +192,7 @@ const UserProfile = () => {
   return (
     <div style={{ paddingBottom: '2rem' }}>
       {/* Header */}
-      <div style={styles.header}>
-        <button onClick={() => navigate('/users')} style={styles.backBtn}>
-          <ArrowLeft size={18} /> Back to Users
-        </button>
+      <div style={{ ...styles.header, marginBottom: '1.5rem', justifyContent: 'flex-end' }}>
         <div style={{ display: 'flex', gap: '0.75rem' }}>
           <button 
             onClick={handleToggleActive} disabled={toggling}
@@ -252,38 +293,59 @@ const UserProfile = () => {
                   <div style={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.75rem', textTransform: 'uppercase' }}>
                     Sessions ({sessions.length})
                   </div>
-                  <div style={{ position: 'relative' }}>
-                    <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', opacity: 0.5 }} />
-                    <input 
-                      type="text" placeholder="Search sessions..." 
-                      value={sessionSearch} onChange={e => setSessionSearch(e.target.value)}
-                      style={{ 
-                        width: '100%', padding: '6px 10px 6px 30px', background: 'rgba(0,0,0,0.2)', 
-                        border: '1px solid var(--glass-border)', borderRadius: '6px', fontSize: '0.8rem', color: '#fff' 
-                      }} 
-                    />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    <div style={{ position: 'relative' }}>
+                      <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', opacity: 0.5 }} />
+                      <input 
+                        type="text" placeholder="Search sessions or REF-ID..." 
+                        value={sessionSearch} onChange={e => setSessionSearch(e.target.value)}
+                        style={{ 
+                          width: '100%', padding: '6px 10px 6px 30px', background: 'rgba(0,0,0,0.2)', 
+                          border: '1px solid var(--glass-border)', borderRadius: '6px', fontSize: '0.8rem', color: '#fff' 
+                        }} 
+                      />
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                       <Filter size={12} style={{ opacity: 0.5 }} />
+                       <select 
+                         value={sessionFilter} onChange={e => setSessionFilter(e.target.value)}
+                         style={{ 
+                           flex: 1, background: 'rgba(0,0,0,0.2)', border: '1px solid var(--glass-border)', 
+                           borderRadius: '4px', fontSize: '0.75rem', color: '#fff', padding: '2px 4px' 
+                         }}
+                       >
+                         <option value="all">All Sessions</option>
+                         <option value="today">Today</option>
+                         <option value="week">Last 7 Days</option>
+                         <option value="month">Last 30 Days</option>
+                       </select>
+                    </div>
                   </div>
                 </div>
                 <div style={{ flex: 1, overflowY: 'auto' }}>
-                  {sessions.filter(s => 
-                    s.title?.toLowerCase().includes(sessionSearch.toLowerCase()) || 
-                    s.session_id?.toLowerCase().includes(sessionSearch.toLowerCase())
-                  ).length === 0 ? (
+                  {getFilteredSessions().length === 0 ? (
                     <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>No sessions found.</div>
-                  ) : sessions.filter(s => 
-                    s.title?.toLowerCase().includes(sessionSearch.toLowerCase()) || 
-                    s.session_id?.toLowerCase().includes(sessionSearch.toLowerCase())
-                  ).map(s => (
+                  ) : getFilteredSessions().map(s => (
                     <div 
                       key={s._id} onClick={() => loadSessionContent(s._id)}
                       style={{
                         ...styles.sessionItem,
                         background: activeSession === s._id ? 'rgba(59,130,246,0.1)' : 'transparent',
                         borderLeft: activeSession === s._id ? '3px solid var(--accent)' : '3px solid transparent',
+                        position: 'relative'
                       }}
                     >
-                      <div style={{ fontWeight: 600, fontSize: '0.85rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title || 'Untitled Session'}</div>
-                      <div style={{ fontSize: '0.7rem', color: 'var(--accent)', marginTop: '4px', fontWeight: 700 }}>{toRefId(s.session_id)}</div>
+                      <div style={{ fontWeight: 600, fontSize: '0.85rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', paddingRight: '24px' }}>{s.title || 'Untitled Session'}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '4px' }}>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--accent)', fontWeight: 700 }}>{toRefId(s.session_id)}</div>
+                        <button 
+                          onClick={(e) => handleCopy(s.session_id, e)}
+                          style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '2px' }}
+                          title="Copy Reference ID"
+                        >
+                          {copiedId === s.session_id ? <Check size={12} color="var(--success)" /> : <Copy size={12} />}
+                        </button>
+                      </div>
                       <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: '2px' }}>{new Date(s.started_at).toLocaleString()}</div>
                     </div>
                   ))}
@@ -307,6 +369,13 @@ const UserProfile = () => {
                           <div style={{ fontSize: '0.65rem', color: 'var(--accent)', fontWeight: 800, textTransform: 'uppercase' }}>Reference ID</div>
                           <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
                             {toRefId(activeSession)}
+                            <button 
+                              onClick={(e) => handleCopy(activeSession, e)}
+                              style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--glass-border)', borderRadius: '4px', color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center' }}
+                              title="Copy Reference ID"
+                            >
+                              {copiedId === activeSession ? <Check size={14} color="var(--success)" /> : <Copy size={14} />}
+                            </button>
                             <span style={{ fontSize: '0.7rem', opacity: 0.5, fontWeight: 400 }}>(Full ID: {activeSession})</span>
                           </div>
                        </div>

@@ -4,6 +4,7 @@ import { AuthProvider, AuthContext } from './AuthContext';
 
 // Layout & Pages
 import Sidebar from './components/Sidebar';
+import Header from './components/Header';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import UsersList from './pages/UsersList';
@@ -22,6 +23,7 @@ const ProtectedRoute = ({ children }) => {
     <div className="app-layout">
       <Sidebar />
       <main className="main-content">
+        <Header />
         {children}
       </main>
     </div>
