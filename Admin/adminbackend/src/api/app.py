@@ -33,20 +33,13 @@ def create_app():
         }
     })
 
-    # Register basic routes
-    @app.route('/health', methods=['GET'])
-    def health_check():
-        return jsonify({
-            "status": "healthy",
-            "service": "admin-chatbot-api"
-        }), 200
-
     from .routes.auth import auth_bp
     from .routes.users import users_bp
     from .routes.chat import chat_bp
     from .routes.logs import logs_bp
     from .routes.chatbot import chatbot_bp
     from .routes.jobs import jobs_bp
+    from .routes.health import health_bp
 
     app.register_blueprint(auth_bp, url_prefix='/auth')
     app.register_blueprint(users_bp, url_prefix='/users')
@@ -54,6 +47,7 @@ def create_app():
     app.register_blueprint(logs_bp, url_prefix='/logs')
     app.register_blueprint(chatbot_bp, url_prefix='/admin-bot')
     app.register_blueprint(jobs_bp, url_prefix='/jobs')
+    app.register_blueprint(health_bp, url_prefix='/health')
 
     return app
 

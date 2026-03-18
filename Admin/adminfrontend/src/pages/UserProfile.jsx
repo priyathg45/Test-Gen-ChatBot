@@ -4,8 +4,10 @@ import axios from 'axios';
 import { 
   ArrowLeft, Mail, Calendar, MessageCircle, Clock, 
   Briefcase, UserCheck, UserX, Trash2, ChevronRight, 
-  MessageSquare, Trash
+  MessageSquare, Trash, Search, Paperclip, Download, Eye
 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { AuthContext } from '../AuthContext';
 
 const StatusBadge = ({ isActive }) => (
@@ -22,6 +24,11 @@ const UserProfile = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const { token } = useContext(AuthContext);
+
+  const toRefId = (sessionId) => {
+    const clean = (sessionId || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+    return 'REF-' + clean.slice(-8).padStart(8, '0');
+  };
   
   const [user, setUser] = useState(null);
   const [sessions, setSessions] = useState([]);
@@ -32,6 +39,9 @@ const UserProfile = () => {
   const [activeTab, setActiveTab] = useState('profile'); // 'profile', 'chat', 'jobs'
   const [msgLoading, setMsgLoading] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [sessionSearch, setSessionSearch] = useState('');
+  const [attachments, setAttachments] = useState([]);
+  const [attLoading, setAttLoading] = useState(false);
 
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
@@ -63,13 +73,48 @@ const UserProfile = () => {
   const loadSessionContent = async (sessionId) => {
     setActiveSession(sessionId);
     setMsgLoading(true);
+    setAttLoading(true);
     try {
-      const res = await axios.get(`/api/chat/session/${sessionId}/messages`, { headers });
-      setSessionMessages(res.data.messages || []);
+      const [msgRes, attRes] = await Promise.all([
+        axios.get(`/api/chat/session/${sessionId}/messages`, { headers }),
+        axios.get(`/api/chat/session/${sessionId}/attachments`, { headers })
+      ]);
+      setSessionMessages(msgRes.data.messages || []);
+      setAttachments(attRes.data.attachments || []);
     } catch (err) {
-      console.error("Error loading messages", err);
+      console.error("Error loading session content", err);
     } finally {
       setMsgLoading(false);
+      setAttLoading(false);
+    }
+  };
+
+  const handleDownload = async (att) => {
+    try {
+      const response = await axios.get(`/api/chat/attachment/${att._id}/download`, {
+        headers,
+        responseType: 'blob'
+      });
+      
+      // Check if response is actually a JSON error hidden in a blob
+      if (response.data.type === 'application/json') {
+        const text = await response.data.text();
+        const error = JSON.parse(text);
+        alert(`Download failed: ${error.error || 'Unknown error'}`);
+        return;
+      }
+
+      const url = window.URL.createObjectURL(response.data);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', att.filename || 'download');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Download error:", err);
+      alert("Failed to download file. Please check server logs.");
     }
   };
 
@@ -202,29 +247,51 @@ const UserProfile = () => {
           {activeTab === 'chat' && (
             <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: '1px', background: 'var(--glass-border)', flex: 1, borderRadius: '8px', overflow: 'hidden' }}>
               {/* Sessions Sidebar */}
-              <div style={{ background: 'rgba(15,23,42,0.3)', overflowY: 'auto', maxHeight: '600px' }}>
-                <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.03)', borderBottom: '1px solid var(--glass-border)', fontWeight: 600, fontSize: '0.85rem' }}>
-                  SESSIONS ({sessions.length})
-                </div>
-                {sessions.length === 0 ? (
-                  <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>No sessions found.</div>
-                ) : sessions.map(s => (
-                  <div 
-                    key={s._id} onClick={() => loadSessionContent(s._id)}
-                    style={{
-                      ...styles.sessionItem,
-                      background: activeSession === s._id ? 'rgba(59,130,246,0.1)' : 'transparent',
-                      borderLeft: activeSession === s._id ? '3px solid var(--accent)' : '3px solid transparent',
-                    }}
-                  >
-                    <div style={{ fontWeight: 600, fontSize: '0.85rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title || 'Untitled Session'}</div>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: '4px' }}>{new Date(s.started_at).toLocaleString()}</div>
+              <div style={{ background: 'rgba(15,23,42,0.3)', overflowY: 'auto', maxHeight: '700px', display: 'flex', flexDirection: 'column' }}>
+                <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.03)', borderBottom: '1px solid var(--glass-border)' }}>
+                  <div style={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.75rem', textTransform: 'uppercase' }}>
+                    Sessions ({sessions.length})
                   </div>
-                ))}
+                  <div style={{ position: 'relative' }}>
+                    <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', opacity: 0.5 }} />
+                    <input 
+                      type="text" placeholder="Search sessions..." 
+                      value={sessionSearch} onChange={e => setSessionSearch(e.target.value)}
+                      style={{ 
+                        width: '100%', padding: '6px 10px 6px 30px', background: 'rgba(0,0,0,0.2)', 
+                        border: '1px solid var(--glass-border)', borderRadius: '6px', fontSize: '0.8rem', color: '#fff' 
+                      }} 
+                    />
+                  </div>
+                </div>
+                <div style={{ flex: 1, overflowY: 'auto' }}>
+                  {sessions.filter(s => 
+                    s.title?.toLowerCase().includes(sessionSearch.toLowerCase()) || 
+                    s.session_id?.toLowerCase().includes(sessionSearch.toLowerCase())
+                  ).length === 0 ? (
+                    <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>No sessions found.</div>
+                  ) : sessions.filter(s => 
+                    s.title?.toLowerCase().includes(sessionSearch.toLowerCase()) || 
+                    s.session_id?.toLowerCase().includes(sessionSearch.toLowerCase())
+                  ).map(s => (
+                    <div 
+                      key={s._id} onClick={() => loadSessionContent(s._id)}
+                      style={{
+                        ...styles.sessionItem,
+                        background: activeSession === s._id ? 'rgba(59,130,246,0.1)' : 'transparent',
+                        borderLeft: activeSession === s._id ? '3px solid var(--accent)' : '3px solid transparent',
+                      }}
+                    >
+                      <div style={{ fontWeight: 600, fontSize: '0.85rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title || 'Untitled Session'}</div>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--accent)', marginTop: '4px', fontWeight: 700 }}>{toRefId(s.session_id)}</div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: '2px' }}>{new Date(s.started_at).toLocaleString()}</div>
+                    </div>
+                  ))}
+                </div>
               </div>
               
               {/* Messages Panel */}
-              <div style={{ background: 'rgba(15,23,42,0.45)', display: 'flex', flexDirection: 'column', maxHeight: '600px' }}>
+              <div style={{ background: 'rgba(15,23,42,0.45)', display: 'flex', flexDirection: 'column', maxHeight: '700px' }}>
                  {!activeSession ? (
                    <div style={styles.emptyContent}>
                      <MessageSquare size={48} color="var(--glass-border)" style={{ marginBottom: '1rem' }} />
@@ -233,33 +300,72 @@ const UserProfile = () => {
                  ) : msgLoading ? (
                    <div style={styles.emptyContent}>Loading messages...</div>
                  ) : (
-                   <div style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                      {sessionMessages.length === 0 ? (
-                        <p style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>No messages in this session.</p>
-                      ) : sessionMessages.map((m, idx) => (
-                        <div key={idx} style={{ 
-                          alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
-                          maxWidth: '85%',
-                          display: 'flex', flexDirection: 'column',
-                          alignItems: m.role === 'user' ? 'flex-end' : 'flex-start'
-                        }}>
-                           <div style={{
-                             padding: '0.75rem 1rem',
-                             borderRadius: m.role === 'user' ? '14px 14px 2px 14px' : '14px 14px 14px 2px',
-                             background: m.role === 'user' ? 'var(--accent)' : 'rgba(255,255,255,0.05)',
-                             color: m.role === 'user' ? '#fff' : '#E2E8F0',
-                             fontSize: '0.88rem',
-                             border: m.role === 'user' ? 'none' : '1px solid rgba(255,255,255,0.1)',
-                             lineHeight: 1.5
-                           }}>
-                              {m.content}
-                           </div>
-                           <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                             {m.role === 'assistant' ? 'Genesis AI' : user.username} • {new Date(m.timestamp).toLocaleTimeString()}
-                           </span>
-                        </div>
-                      ))}
-                   </div>
+                   <>
+                    {/* Session Header */}
+                    <div style={{ padding: '0.75rem 1.5rem', background: 'rgba(255,255,255,0.02)', borderBottom: '1px solid var(--glass-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                       <div>
+                          <div style={{ fontSize: '0.65rem', color: 'var(--accent)', fontWeight: 800, textTransform: 'uppercase' }}>Reference ID</div>
+                          <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            {toRefId(activeSession)}
+                            <span style={{ fontSize: '0.7rem', opacity: 0.5, fontWeight: 400 }}>(Full ID: {activeSession})</span>
+                          </div>
+                       </div>
+                       {attachments.length > 0 && (
+                         <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                           <Paperclip size={14} /> {attachments.length} attached
+                         </div>
+                       )}
+                    </div>
+
+                    <div style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                       {/* Attachments Section at top */}
+                       {attachments.length > 0 && (
+                         <div style={{ marginBottom: '1rem' }}>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontWeight: 600 }}>SESSION ATTACHMENTS</div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem' }}>
+                              {attachments.map(att => (
+                                <div key={att._id} style={styles.attachmentChip}>
+                                  <Paperclip size={14} />
+                                  <span style={{ fontSize: '0.8rem', maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{att.filename}</span>
+                                  <div style={{ display: 'flex', gap: '4px', marginLeft: '8px' }}>
+                                    <button onClick={() => handleDownload(att)} style={styles.attBtn} title="Download"><Download size={14} /></button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                         </div>
+                       )}
+
+                       {sessionMessages.length === 0 ? (
+                         <p style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>No messages in this session.</p>
+                       ) : sessionMessages.map((m, idx) => (
+                         <div key={idx} style={{ 
+                           alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
+                           maxWidth: '90%',
+                           display: 'flex', flexDirection: 'column',
+                           alignItems: m.role === 'user' ? 'flex-end' : 'flex-start'
+                         }}>
+                            <div className="markdown-container" style={{
+                              padding: '1rem 1.25rem',
+                              borderRadius: m.role === 'user' ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
+                              background: m.role === 'user' ? 'var(--accent)' : 'rgba(255,255,255,0.07)',
+                              color: m.role === 'user' ? '#fff' : '#E2E8F0',
+                              fontSize: '0.92rem',
+                              border: m.role === 'user' ? 'none' : '1px solid rgba(255,255,255,0.1)',
+                              lineHeight: 1.6,
+                              boxShadow: '0 4px 12px rgba(0,0,0,0.1)'
+                            }}>
+                               <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                 {m.content}
+                               </ReactMarkdown>
+                            </div>
+                            <span style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', marginTop: '6px', fontWeight: 500 }}>
+                              {m.role === 'assistant' ? 'GENESIS AI' : user.username.toUpperCase()} • {new Date(m.timestamp).toLocaleString()}
+                            </span>
+                         </div>
+                       ))}
+                    </div>
+                   </>
                  )}
               </div>
             </div>
@@ -317,7 +423,9 @@ const styles = {
   sessionItem: { padding: '1rem', cursor: 'pointer', borderBottom: '1px solid rgba(255,255,255,0.03)', transition: 'background 0.2s' },
   emptyContent: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', fontSize: '0.9rem' },
   jobRow: { padding: '1.25rem', display: 'flex', alignItems: 'center', border: '1px solid var(--glass-border)', cursor: 'pointer', transition: 'transform 0.2s' },
-  loading: { padding: '5rem', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '1.1rem' }
+  loading: { padding: '5rem', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '1.1rem' },
+  attachmentChip: { display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--glass-border)', borderRadius: '20px', color: 'var(--text-primary)' },
+  attBtn: { background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '4px', transition: 'background 0.2s', ':hover': { background: 'rgba(59,130,246,0.1)' } }
 };
 
 export default UserProfile;

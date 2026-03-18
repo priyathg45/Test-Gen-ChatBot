@@ -7,6 +7,7 @@ from flask import Blueprint, request, jsonify
 from src.config import Config
 from src.utils.mongo import get_collection
 from .auth import verify_token
+from src.api.routes.logs import log_activity
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +35,12 @@ def get_users():
         users_col = _users_col()
         if users_col is None:
             return jsonify({"error": "Database error"}), 500
-        users = list(users_col.find({}, {"password": 0}).sort("created_at", -1))
+        # Project full_name instead of username
+        users = list(users_col.find({}, {"password": 0, "password_hash": 0}).sort("created_at", -1))
         for user in users:
             user["_id"] = str(user["_id"])
+            # In the User backend, username isn't a field, full_name is.
+            user["username"] = user.get("full_name", user.get("email", "Unknown"))
             if "is_active" not in user:
                 user["is_active"] = True
         return jsonify({"users": users}), 200
@@ -52,10 +56,12 @@ def get_user(user_id):
         return jsonify({"error": "Unauthorized"}), 401
     try:
         users_col = _users_col()
-        user = users_col.find_one({"_id": ObjectId(user_id)}, {"password": 0})
+        user = users_col.find_one({"_id": ObjectId(user_id)}, {"password": 0, "password_hash": 0})
         if not user:
             return jsonify({"error": "User not found"}), 404
         user["_id"] = str(user["_id"])
+        # Map full_name to username for frontend compatibility
+        user["username"] = user.get("full_name", user.get("email", "Unknown"))
         if "is_active" not in user:
             user["is_active"] = True
         return jsonify({"user": user}), 200
@@ -72,7 +78,8 @@ def update_user(user_id):
     try:
         users_col = _users_col()
         data = request.get_json() or {}
-        allowed = {"username", "email", "is_active", "role"}
+        # Changed 'username' to 'full_name' in allowed fields
+        allowed = {"full_name", "email", "is_active", "role"}
         updates = {k: v for k, v in data.items() if k in allowed}
         if not updates:
             return jsonify({"error": "No valid fields to update"}), 400
@@ -80,8 +87,9 @@ def update_user(user_id):
         result = users_col.update_one({"_id": ObjectId(user_id)}, {"$set": updates})
         if result.matched_count == 0:
             return jsonify({"error": "User not found"}), 404
-        user = users_col.find_one({"_id": ObjectId(user_id)}, {"password": 0})
+        user = users_col.find_one({"_id": ObjectId(user_id)}, {"password": 0, "password_hash": 0})
         user["_id"] = str(user["_id"])
+        user["username"] = user.get("full_name", user.get("email", "Unknown"))
         return jsonify({"success": True, "user": user}), 200
     except Exception as e:
         logger.error("Error updating user: %s", e)
@@ -101,6 +109,9 @@ def activate_user(user_id):
         )
         if result.matched_count == 0:
             return jsonify({"error": "User not found"}), 404
+        
+        # Get user email for better logging if possible, though we might not have it easily here without another query
+        log_activity("INFO", f"Activated user account ID: {user_id}")
         return jsonify({"success": True, "message": "User activated"}), 200
     except Exception as e:
         logger.error("Error activating user: %s", e)
@@ -120,6 +131,8 @@ def deactivate_user(user_id):
         )
         if result.matched_count == 0:
             return jsonify({"error": "User not found"}), 404
+            
+        log_activity("WARNING", f"Deactivated user account ID: {user_id}")
         return jsonify({"success": True, "message": "User deactivated"}), 200
     except Exception as e:
         logger.error("Error deactivating user: %s", e)
@@ -136,6 +149,8 @@ def delete_user(user_id):
         result = users_col.delete_one({"_id": ObjectId(user_id)})
         if result.deleted_count == 0:
             return jsonify({"error": "User not found"}), 404
+            
+        log_activity("ERROR", f"Deleted user account ID: {user_id}")
         return jsonify({"message": "User deleted successfully"}), 200
     except Exception as e:
         logger.error("Error deleting user: %s", e)
@@ -150,12 +165,14 @@ def users_stats():
     try:
         users_col = _users_col()
         total = users_col.count_documents({})
+        # is_active: False is the only case for inactive; everything else (True or missing) is active.
         active = users_col.count_documents({"is_active": {"$ne": False}})
         inactive = users_col.count_documents({"is_active": False})
-        recent = list(users_col.find({}, {"password": 0, "_id": 1, "username": 1, "email": 1, "created_at": 1})
+        recent = list(users_col.find({}, {"_id": 1, "full_name": 1, "email": 1, "created_at": 1})
                       .sort("created_at", -1).limit(5))
         for u in recent:
             u["_id"] = str(u["_id"])
+            u["username"] = u.get("full_name", u.get("email", "Unknown"))
         return jsonify({"success": True, "total": total, "active": active, "inactive": inactive, "recent": recent}), 200
     except Exception as e:
         logger.error("Error fetching user stats: %s", e)

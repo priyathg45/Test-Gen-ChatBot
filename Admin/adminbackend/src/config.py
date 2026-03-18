@@ -16,3 +16,9 @@ class Config:
     # Admin Settings
     ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
     ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
+
+    MONGO_ACTIVITY_LOGS_COLLECTION = 'activity_logs'
+    
+    # Ollama Settings
+    OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")

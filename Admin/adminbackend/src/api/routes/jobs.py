@@ -8,6 +8,8 @@ from src.config import Config
 from src.utils.mongo import get_collection
 from .auth import verify_token
 
+from src.api.routes.logs import log_activity
+
 logger = logging.getLogger(__name__)
 jobs_bp = Blueprint('jobs', __name__)
 
@@ -40,16 +42,17 @@ def get_all_jobs():
 
         jobs = list(coll.find({}, {"_id": 0}).sort("created_at", -1))
 
-        # Enrich with username from users collection
+        # Enrich with user info from users collection
         users_col = _users_col()
         user_cache = {}
         for job in jobs:
             uid = job.get("user_id")
             if uid and uid not in user_cache:
                 try:
-                    u = users_col.find_one({"_id": ObjectId(uid)}, {"username": 1, "email": 1})
+                    # Map full_name to username for frontend
+                    u = users_col.find_one({"_id": ObjectId(uid)}, {"full_name": 1, "email": 1})
                     user_cache[uid] = {
-                        "username": u.get("username", "Unknown") if u else "Unknown",
+                        "username": u.get("full_name", "Unknown") if u else "Unknown",
                         "email": u.get("email", "") if u else "",
                     }
                 except Exception:

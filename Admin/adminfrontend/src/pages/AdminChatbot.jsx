@@ -13,17 +13,19 @@ const QUICK_CHIPS = [
   { label: '📈 Today\'s Activity',    msg: 'Summarize today\'s user activity' },
 ];
 
-const WELCOME = `## 👋 Hello, Admin!
+const WELCOME = `## 👋 Welcome to Genesis Admin Intelligence
 
-I'm your **Genesis Intelligence Assistant** — powered by Llama via Ollama.
+I'm your official system co-pilot. I have **live access** to the Genesis IT Lab database and can help you manage the platform efficiently.
 
-I have **live access** to your system data and can:
-- 📊 Answer questions about users, jobs and chat sessions
-- 👥 Manage users (activate, deactivate, delete)
-- 💼 Manage jobs (accept, reject)
-- 📎 Read uploaded PDFs and answer questions about them
+**What I can do:**
+- 📊 **Query System Stats:** Ask about users, jobs, or chat sessions.
+- 👥 **User Management:** Deactivate, activate, or delete users via chat.
+- 💼 **Job Control:** Monitor and update job statuses (accept/reject).
+- 📎 **Contextual Analysis:** Upload PDFs or text files for instant summaries.
 
-**Try a quick action below, or type anything!**`;
+*Note: If Ollama is offline, I'll switch to **Lite Mode** to ensure you still have access to key system data.*
+
+**Try a quick command below to get started!**`;
 
 const AdminChatbot = () => {
   const { token } = useContext(AuthContext);

@@ -14,8 +14,8 @@ from .auth import verify_token
 logger = logging.getLogger(__name__)
 chatbot_bp = Blueprint('chatbot', __name__)
 
-OLLAMA_BASE = getattr(Config, 'OLLAMA_BASE_URL', 'http://localhost:11434')
-OLLAMA_MODEL = getattr(Config, 'OLLAMA_MODEL', 'llama3.2')
+OLLAMA_BASE = Config.OLLAMA_BASE_URL
+OLLAMA_MODEL = Config.OLLAMA_MODEL
 
 
 def check_admin_auth():
@@ -31,11 +31,23 @@ def _col(name):
 
 
 def _ollama_available():
+    """Check if Ollama server and the specified model are available."""
     try:
-        req = urllib.request.Request(f"{OLLAMA_BASE}/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=3):
+        # Check if server is up
+        req = urllib.request.Request(f"{OLLAMA_BASE.rstrip('/')}/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            if resp.status != 200:
+                return False
+            
+            # Optional: Check if the specific model is pulled
+            tags = json.loads(resp.read().decode())
+            models = [m.get("name") for m in tags.get("models", [])]
+            if OLLAMA_MODEL not in models and f"{OLLAMA_MODEL}:latest" not in models:
+                logger.warning(f"Ollama is running but model '{OLLAMA_MODEL}' is not found.")
+                # We still return True if server is up, Ollama might auto-pull or handle it
             return True
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Ollama check failed: {e}")
         return False
 
 
@@ -199,44 +211,61 @@ def ask_admin_bot():
                 logger.warning("Ollama call failed, using fallback: %s", ex)
                 bot_response = ""
 
-        # Fallback rule-based responses
+        # Fallback (Lite Intelligence mode)
         if not bot_response:
             msg_lower = user_message.lower()
-            if any(k in msg_lower for k in ["how many user", "total user", "user count"]):
+            
+            # Helper for summary
+            total_u = ctx.get('total_users', 0)
+            active_u = ctx.get('active_users', 0)
+            total_j = ctx.get('total_jobs', 0)
+            pending_j = ctx.get('pending_jobs', 0)
+            
+            if any(k in msg_lower for k in ["how many user", "total user", "user count", "user stats", "summary"]):
                 bot_response = (
-                    f"## 👥 User Statistics\n\n"
-                    f"- **Total users:** {ctx.get('total_users', 'N/A')}\n"
-                    f"- **Active:** {ctx.get('active_users', 'N/A')}\n"
-                    f"- **Inactive:** {ctx.get('inactive_users', 'N/A')}"
+                    f"## 📊 Genesis System Summary (Lite Mode)\n\n"
+                    f"Currently operating in **Fallback Mode** (Ollama unavailable).\n\n"
+                    f"### 👥 Users\n"
+                    f"- **Total:** {total_u}\n"
+                    f"- **Active:** {active_u}\n"
+                    f"- **Inactive:** {ctx.get('inactive_users', 0)}\n\n"
+                    f"### 💼 Jobs\n"
+                    f"- **Total:** {total_j}\n"
+                    f"- **Pending Approval:** {pending_j}\n"
+                    f"- **Completed:** {ctx.get('completed_jobs', 0)}\n\n"
+                    f"### 💬 sessions\n"
+                    f"- **Total Chat Sessions:** {ctx.get('total_sessions', 0)}\n\n"
+                    f"⚠️ *Start Ollama (`ollama run {OLLAMA_MODEL}`) for full AI capabilities.*"
                 )
-            elif any(k in msg_lower for k in ["job", "pending", "placed"]):
+            elif any(k in msg_lower for k in ["job", "pending", "placed", "list jobs"]):
                 rj = ctx.get('recent_jobs', [])
-                lines = "\n".join(f"- **{j['title']}** — {j['client']} — *{j['status']}*" for j in rj) if rj else "No recent jobs."
+                lines = "\n".join(f"- **{j['title']}** (Client: {j['client']}) — Status: `{j['status']}`" for j in rj) if rj else "No recent jobs found."
                 bot_response = (
-                    f"## 💼 Jobs Overview\n\n"
-                    f"- **Total:** {ctx.get('total_jobs', 'N/A')}\n"
-                    f"- **Pending:** {ctx.get('pending_jobs', 'N/A')}\n"
-                    f"- **Accepted:** {ctx.get('accepted_jobs', 'N/A')}\n"
-                    f"- **Completed:** {ctx.get('completed_jobs', 'N/A')}\n\n"
-                    f"### Recent Jobs\n{lines}"
+                    f"## 💼 Jobs Overview (Lite Mode)\n\n"
+                    f"Showing recent activity from the database:\n\n"
+                    f"{lines}\n\n"
+                    f"**Quick Stats:**\n"
+                    f"- Pending: {pending_j}\n"
+                    f"- Accepted: {ctx.get('accepted_jobs', 0)}\n"
+                    f"- Completed: {ctx.get('completed_jobs', 0)}"
                 )
-            elif any(k in msg_lower for k in ["status", "health", "system"]):
+            elif any(k in msg_lower for k in ["status", "health", "system", "check"]):
                 bot_response = (
-                    f"## ✅ System Status\n\n"
-                    f"All backend services are **operational**.\n\n"
-                    f"- 👥 Users: {ctx.get('total_users', 'N/A')}\n"
-                    f"- 💼 Jobs: {ctx.get('total_jobs', 'N/A')}\n"
-                    f"- 💬 Sessions: {ctx.get('total_sessions', 'N/A')}\n\n"
-                    f"⚠️ *Ollama is not running — AI responses are in fallback mode.*"
+                    f"## ✅ System Health Check\n\n"
+                    f"- **Database (MongoDB):** Connected\n"
+                    f"- **Admin Backend:** Operational\n"
+                    f"- **AI Engine (Ollama):** ⚠️ Offline (Fallback active)\n\n"
+                    f"The system remains functional, but complex reasoning and natural language processing are limited."
                 )
             else:
                 bot_response = (
-                    f"I can help with:\n\n"
-                    f"- 📊 **System stats** — users, jobs, sessions\n"
-                    f"- 👥 **User management** — activate, deactivate, delete\n"
-                    f"- 💼 **Job management** — accept, reject jobs\n"
-                    f"- 📋 **Activity monitoring** — recent activity summaries\n\n"
-                    f"⚠️ *Ollama is not reachable. Start Ollama for full AI capabilities.*"
+                    f"I am currently in **Lite Mode** because Ollama is not reachable. I can still provide system data and perform basic actions.\n\n"
+                    f"**System Snapshot:**\n"
+                    f"- Users: {total_u} ({active_u} active)\n"
+                    f"- Jobs: {total_j} ({pending_j} pending)\n\n"
+                    f"**Available Actions:**\n"
+                    f"- To manage users or jobs, please use the sidebar or ask specifically about 'users' or 'jobs'.\n\n"
+                    f"⚠️ *Tip: Ask 'System summary' for a full look at the current state.*"
                 )
 
         return jsonify({"response": bot_response + action_result}), 200
