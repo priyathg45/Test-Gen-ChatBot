@@ -48,10 +48,12 @@ def save_attachment(
     filename: str,
     content_type: str,
     file_bytes: bytes,
+    user_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Save a file to GridFS and store metadata (including extracted text) in the attachments collection.
     Text is extracted at upload time so the chatbot can read document content immediately.
+
 
     Returns:
         Document with _id, session_id, filename, content_type, file_id (GridFS), extracted_text, created_at
@@ -89,6 +91,9 @@ def save_attachment(
             "extracted_text": extracted_text or "",
             "created_at": datetime.utcnow().isoformat(),
         }
+        if user_id:
+            doc["user_id"] = user_id
+            
         result = attachments_coll.insert_one(doc)
         doc["_id"] = result.inserted_id
         logger.info(

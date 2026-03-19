@@ -20,6 +20,8 @@ import ContactPage from './pages/ContactPage';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import ProfilePage from './pages/ProfilePage';
+import JobsPage from './pages/JobsPage';
+import ViewJobPage from './pages/ViewJobPage';
 import AdminLayout from './admin/AdminLayout';
 import AdminDashboard from './admin/AdminDashboard';
 import AdminUsers from './admin/AdminUsers';
@@ -42,6 +44,8 @@ function App() {
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/profile" element={<Layout><ProtectedRoute><ProfilePage /></ProtectedRoute></Layout>} />
+          <Route path="/jobs" element={<Layout><ProtectedRoute><JobsPage /></ProtectedRoute></Layout>} />
+          <Route path="/jobs/:jobId" element={<Layout><ProtectedRoute><ViewJobPage /></ProtectedRoute></Layout>} />
           <Route path="/admin" element={<ProtectedRoute requireAdmin><AdminLayout /></ProtectedRoute>}>
             <Route index element={<AdminDashboard />} />
             <Route path="users" element={<AdminUsers />} />

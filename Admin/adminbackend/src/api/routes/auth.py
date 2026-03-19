@@ -87,7 +87,32 @@ def login():
 
 @auth_bp.route('/me', methods=['GET'])
 def get_me():
-    """Get current admin context."""
+    """Get current admin context with full details."""
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return jsonify({"error": "Missing authorization"}), 401
+    
+    token = auth_header.split(" ")[1]
+    payload = verify_token(token)
+    if not payload:
+        return jsonify({"error": "Invalid or expired token"}), 401
+    
+    username = payload["username"]
+    admins_collection = get_collection(Config.MONGO_URI, Config.MONGO_DB, "admins")
+    
+    admin_data = {"username": username, "role": payload.get("role", "admin")}
+    
+    if admins_collection is not None:
+        db_user = admins_collection.find_one({"username": username}, {"password": 0})
+        if db_user:
+            db_user["_id"] = str(db_user["_id"])
+            admin_data = db_user
+
+    return jsonify(admin_data), 200
+
+@auth_bp.route('/profile', methods=['PUT'])
+def update_profile():
+    """Update current admin profile details."""
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         return jsonify({"error": "Missing authorization"}), 401
@@ -97,7 +122,28 @@ def get_me():
     if not payload:
         return jsonify({"error": "Invalid or expired token"}), 401
         
-    return jsonify({
-        "username": payload["username"],
-        "role": payload.get("role", "admin")
-    }), 200
+    username = payload["username"]
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+        
+    # Allowed fields to update
+    allowed_fields = ["full_name", "email", "phone", "bio"]
+    updates = {k: v for k, v in data.items() if k in allowed_fields}
+    
+    if not updates:
+        return jsonify({"error": "No valid fields to update"}), 400
+        
+    admins_collection = get_collection(Config.MONGO_URI, Config.MONGO_DB, "admins")
+    if admins_collection is None:
+        return jsonify({"error": "Database connection error"}), 500
+        
+    result = admins_collection.update_one(
+        {"username": username},
+        {"$set": updates}
+    )
+    
+    if result.matched_count == 0:
+        return jsonify({"error": "Admin user not found in database"}), 404
+        
+    return jsonify({"success": True, "message": "Profile updated successfully"}), 200

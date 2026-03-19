@@ -4,10 +4,10 @@ import {
   Home, 
   Users, 
   MessageSquare, 
-  Settings, 
   FileText, 
   LogOut,
-  Shield
+  Shield,
+  Briefcase
 } from 'lucide-react';
 import { useContext } from 'react';
 import { AuthContext } from '../AuthContext';
@@ -24,6 +24,7 @@ const Sidebar = () => {
   const navItems = [
     { icon: <Home size={20} />, label: 'Dashboard', path: '/' },
     { icon: <Users size={20} />, label: 'User Management', path: '/users' },
+    { icon: <Briefcase size={20} />, label: 'Jobs', path: '/jobs' },
     { icon: <FileText size={20} />, label: 'System Logs', path: '/logs' },
     { icon: <MessageSquare size={20} />, label: 'Admin Assistant', path: '/chatbot' },
   ];
@@ -35,13 +36,19 @@ const Sidebar = () => {
         <h2 style={{ fontSize: '1.25rem', margin: 0 }}>Admin Portal</h2>
       </div>
       
-      <div style={styles.userProfile}>
+      <div 
+        style={{...styles.userProfile, cursor: 'pointer'}} 
+        className="sidebar-profile"
+        onClick={() => navigate('/profile')}
+      >
         <div style={styles.avatar}>
           {admin?.username?.charAt(0).toUpperCase() || 'A'}
         </div>
         <div>
           <div style={{ fontWeight: '600' }}>{admin?.username || 'Admin'}</div>
-          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Super Administrator</div>
+          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+            {admin?.role === 'superadmin' ? 'Super Administrator' : 'Administrator'}
+          </div>
         </div>
       </div>
 

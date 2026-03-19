@@ -10,12 +10,23 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     const token = localStorage.getItem('adminToken');
     if (token) {
-      // Very basic validation - we just set admin if token exists locally.
-      // Real app verifies it via a `/me` endpoint.
       axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
       setAdmin({ token });
     }
     setLoading(false);
+
+    // Add interceptor to handle 401 Unauthorized errors (expired session)
+    const interceptor = axios.interceptors.response.use(
+      (response) => response,
+      (error) => {
+        if (error.response?.status === 401) {
+          logout();
+        }
+        return Promise.reject(error);
+      }
+    );
+
+    return () => axios.interceptors.response.eject(interceptor);
   }, []);
 
   const login = async (username, password) => {

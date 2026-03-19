@@ -5,6 +5,8 @@ from typing import List, Tuple
 from sentence_transformers import SentenceTransformer
 import pickle
 import os
+import json
+import urllib.request
 
 logger = logging.getLogger(__name__)
 
@@ -22,14 +24,27 @@ class EmbeddingsManager:
         self.model = None
         self.embeddings = None
         self.texts = None
-        logger.info(f"Loading model: {model_name}")
+        
+        try:
+            from src.config import config
+            self.use_ollama = getattr(config, "USE_OLLAMA_FOR_EMBEDDINGS", False)
+            self.ollama_base_url = getattr(config, "OLLAMA_BASE_URL", "http://localhost:11434")
+        except ImportError:
+            self.use_ollama = False
+            self.ollama_base_url = "http://localhost:11434"
+
+        logger.info(f"Embeddings manager initializing with model: {model_name} (Ollama={self.use_ollama})")
         self._load_model()
     
     def _load_model(self):
-        """Load the sentence transformer model."""
+        """Load the sentence transformer model if not using Ollama."""
+        if self.use_ollama:
+            logger.info("Skipping local PyTorch model load; routing embeddings to Ollama API.")
+            return
+
         try:
             self.model = SentenceTransformer(self.model_name)
-            logger.info(f"Successfully loaded model: {self.model_name}")
+            logger.info(f"Successfully loaded sentence-transformer model: {self.model_name}")
         except Exception as e:
             logger.error(f"Error loading model: {str(e)}")
             raise
@@ -37,17 +52,32 @@ class EmbeddingsManager:
     def create_embeddings(self, texts: List[str]) -> np.ndarray:
         """
         Create embeddings for a list of texts.
-        
-        Args:
-            texts (List[str]): List of texts to embed
-            
-        Returns:
-            np.ndarray: Array of embeddings
         """
         try:
             self.texts = texts
-            self.embeddings = self.model.encode(texts, show_progress_bar=True)
-            logger.info(f"Created embeddings for {len(texts)} texts")
+            if self.use_ollama:
+                # Process sequentially for Ollama embeddings
+                embeddings = []
+                failed = False
+                for idx, text in enumerate(texts):
+                    emb = self._get_ollama_embedding(text)
+                    if emb is None:
+                        logger.error(f"Failed to create Ollama embedding for text index {idx}. Falling back to SentenceTransformers.")
+                        failed = True
+                        break
+                    embeddings.append(emb)
+                
+                if not failed and embeddings:
+                    self.embeddings = np.array(embeddings, dtype=np.float32)
+                else:
+                    logger.warning(f"Ollama failed for {self.model_name}. Loading SentenceTransformer fallback.")
+                    if self.model is None:
+                        self.model = SentenceTransformer(self.model_name)
+                    self.embeddings = self.model.encode(texts, show_progress_bar=True)
+            else:
+                self.embeddings = self.model.encode(texts, show_progress_bar=True)
+            
+            logger.info(f"Created embeddings for {len(texts)} texts using {self.model_name}")
             return self.embeddings
         except Exception as e:
             logger.error(f"Error creating embeddings: {str(e)}")
@@ -56,17 +86,45 @@ class EmbeddingsManager:
     def encode_text(self, text: str) -> np.ndarray:
         """
         Encode a single text to embedding.
-        
-        Args:
-            text (str): Text to encode
-            
-        Returns:
-            np.ndarray: Embedding vector
         """
         try:
+            if self.use_ollama:
+                emb = self._get_ollama_embedding(text)
+                if emb is not None:
+                    return np.array(emb, dtype=np.float32)
+                logger.warning(f"Ollama embedding failed for text. Falling back to SentenceTransformer.")
+                if self.model is None:
+                     self.model = SentenceTransformer(self.model_name)
+            
             return self.model.encode(text)
         except Exception as e:
             logger.error(f"Error encoding text: {str(e)}")
+            return None
+            
+    def _get_ollama_embedding(self, text: str) -> List[float]:
+        """Call Ollama /api/embeddings endpoint for a single text."""
+        try:
+            body = {
+                "model": self.model_name,
+                "prompt": text
+            }
+            req = urllib.request.Request(
+                f"{self.ollama_base_url.rstrip('/')}/api/embeddings",
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data.get("embedding")
+        except urllib.error.HTTPError as he:
+            if he.code == 404:
+                logger.error(f"Ollama API 404: Check if model '{self.model_name}' is installed (e.g. 'ollama pull {self.model_name}').")
+            else:
+                logger.error(f"Ollama HTTP error {he.code}: {he.read().decode('utf-8')}")
+            return None
+        except Exception as e:
+            logger.error(f"Ollama API embedding failed: {e}")
             return None
     
     def save_embeddings(self, filepath: str):

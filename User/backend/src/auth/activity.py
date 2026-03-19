@@ -32,6 +32,8 @@ def log_activity(
     try:
         entry = {
             'user_id': user_id,
+            'source': 'user',
+            'level': 'INFO', # Default for user activities
             'action': action,
             'resource': resource,
             'details': details or {},

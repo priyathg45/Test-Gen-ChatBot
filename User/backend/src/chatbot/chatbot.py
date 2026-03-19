@@ -82,22 +82,37 @@ class AluminiumChatBot:
                 logger.error(f"Failed to write message to MongoDB: {exc}")
     
     def _create_system_prompt(self) -> str:
-        """
-        Create system prompt for the chatbot.
-        """
-        return """You are a helpful assistant. You do two things:
+        """Create system prompt for the chatbot."""
+        return """You are AAW Assistant — a helpful, precise AI for Active Aluminium Windows.
 
-1) WHEN THE USER ASKS ABOUT AN UPLOADED DOCUMENT (e.g. summarize, explain, what does it say):
-   - Answer ONLY from the document content provided. Do not assume the document is about aluminum or any specific topic.
-   - If the document is NOT about aluminum products, say so clearly and summarize what the document is actually about (e.g. "This document is about ...").
-   - If the document IS about aluminum/jobs/quotations, you can use that and also refer to product/job data when the user asks for budget or quotation.
-   - Be accurate, concise, and faithful to the document. Do not invent content or force aluminum into the answer when the document is about something else.
+## CORE RULES
 
-2) WHEN THE USER ASKS ABOUT ALUMINUM PRODUCTS OR JOBS (without a document, or explicitly about products):
-   - Use the product/job knowledge base to answer: specifications, applications, prices, quotations, jobs (AAW).
-   - Be accurate and reference specific details when provided.
+### When answering from an uploaded document:
+- ALWAYS state clearly which page(s) you are reading from, e.g.: **📄 Reading from Page 3 of report.pdf**
+- Structure your answer using Markdown with headings, bullet points, and tables — never a wall of text.
+- Keep each section concise and focused.
+- If the document is NOT about aluminium, say so clearly and summarise what it is actually about.
+- Do NOT invent content; be faithful to what is in the document.
 
-Always: Understand what the user is asking. Prefer the document content when they are asking about the uploaded file. Be honest if you don't have the information."""
+### When answering about aluminium products (no document upload):
+- Reference specific product names, specifications, or prices from the knowledge base.
+- Use bullet points or tables to compare products when relevant.
+
+### Formatting rules you MUST follow every response:
+1. Use **bold** for key terms, labels, and product names.
+2. Use bullet lists for multi-item information.
+3. Use numbered lists for steps or ordered information.
+4. Use > blockquotes for important notes or warnings.
+5. Use tables when presenting comparative data.
+6. Add a `---` separator before a "Summary" or "Key Takeaways" section if the response is long.
+7. Always end document answers with: **📌 Source: Page X of [filename]** (on its own line).
+
+### What you must NEVER do:
+- Never write long unbroken paragraphs.
+- Never say "this document seems to be about aluminium" when it clearly is not.
+- Never produce a response without clear structure.
+
+Be clear, concise, and user-friendly."""
 
     def _get_config_value(self, key: str, default=None):
         """Get config value from object or mapping."""
@@ -299,6 +314,19 @@ Always: Understand what the user is asking. Prefer the document content when the
             logger.info("No text chunks from attachments for session %s (extraction may have produced no text)", session_id)
             return ""
 
+        # ── Page-number filtering ─────────────────────────────────────────────
+        import re as _re
+        requested_page = self._detect_page_request(query)
+        if requested_page is not None:
+            page_marker = f"[PAGE_{requested_page}]"
+            page_chunks = [c for c in all_chunks if page_marker in c["text"]]
+            if page_chunks:
+                logger.info("Page filter: keeping %d chunks for page %d", len(page_chunks), requested_page)
+                all_chunks = page_chunks
+            else:
+                logger.info("Page filter: no chunks found for page %d, using all chunks", requested_page)
+        # ─────────────────────────────────────────────────────────────────────
+
         top_k_doc = min(self._get_config_value("TOP_K_DOC_CHUNKS", 12), len(all_chunks))
         chunks_to_use = all_chunks
         if len(all_chunks) > MAX_DOC_CHUNKS_TO_EMBED:
@@ -313,24 +341,68 @@ Always: Understand what the user is asking. Prefer the document content when the
                 selected = chunks_to_use[:top_k_doc]
             else:
                 chunk_texts = [c["text"] for c in chunks_to_use]
-                chunk_embeddings = self.embeddings_manager.model.encode(chunk_texts, show_progress_bar=False)
-                sims = cosine_similarity([query_embedding], chunk_embeddings)[0]
-                top_k_here = min(top_k_doc, len(chunks_to_use))
-                top_indices = np.argsort(sims)[::-1][:top_k_here]
-                selected = [chunks_to_use[i] for i in top_indices]
+                # Use manager to encode instead of model directly, routing through Ollama if configured
+                chunk_embeddings = self.embeddings_manager.create_embeddings(chunk_texts)
+                
+                if chunk_embeddings is None:
+                    selected = chunks_to_use[:top_k_doc]
+                else:
+                    sims = cosine_similarity([query_embedding], chunk_embeddings)[0]
+                    top_k_here = min(top_k_doc, len(chunks_to_use))
+                    top_indices = np.argsort(sims)[::-1][:top_k_here]
+                    selected = [chunks_to_use[i] for i in top_indices]
         except Exception as e:
             logger.warning("PDF chunk ranking failed (using first chunks): %s", e)
             selected = chunks_to_use[:top_k_doc]
 
         return self._format_document_context(selected)
 
+    def _detect_page_request(self, query: str) -> Optional[int]:
+        """Return the 1-based page number if the user asked about a specific page, else None."""
+        import re as _re
+        patterns = [
+            r"page\s+(\d+)",
+            r"(\d+)(?:st|nd|rd|th)?\s+page",
+            r"pg\.?\s*(\d+)",
+        ]
+        q = (query or "").strip().lower()
+        for pat in patterns:
+            m = _re.search(pat, q)
+            if m:
+                try:
+                    return int(m.group(1))
+                except ValueError:
+                    pass
+        return None
+
     def _format_document_context(self, chunks: List[Dict[str, str]]) -> str:
-        """Format retrieved document chunks for the response."""
+        """Format retrieved document chunks for the LLM with clear page section labels."""
+        import re as _re
         if not chunks:
             return ""
-        lines = ["CONTENT FROM UPLOADED FILES (use this to answer questions about the attached documents):"]
-        for i, item in enumerate(chunks, 1):
-            lines.append(f"\n[{item.get('filename', 'document')} - excerpt {i}]:\n{item.get('text', '')}")
+
+        # Group chunks by (filename, page_num) to produce clean sections
+        from collections import OrderedDict
+        sections: OrderedDict = OrderedDict()
+        for item in chunks:
+            text = item.get("text", "")
+            filename = item.get("filename", "document")
+            m = _re.match(r"\[PAGE_(\d+)\]\n?", text)
+            page_num = int(m.group(1)) if m else 0
+            clean_text = _re.sub(r"^\[PAGE_\d+\]\n?", "", text).strip()
+            key = (filename, page_num)
+            if key not in sections:
+                sections[key] = []
+            sections[key].append(clean_text)
+
+        lines = ["=== DOCUMENT CONTEXT (extracted from uploaded file) ===\n"]
+        for (filename, page_num), texts in sections.items():
+            page_label = f"Page {page_num}" if page_num else "Unknown page"
+            lines.append(f"--- {page_label} of '{filename}' ---")
+            lines.append("\n".join(t for t in texts if t))
+            lines.append("")  # blank line between sections
+
+        lines.append("=== END OF DOCUMENT CONTEXT ===")
         return "\n".join(lines)
 
     def _format_products_context(self, products: List[Dict]) -> str:
@@ -365,8 +437,11 @@ Always: Understand what the user is asking. Prefer the document content when the
         products_context: str,
         document_context: str,
         document_only: bool = False,
+        requested_page: Optional[int] = None,
     ) -> List[Dict[str, str]]:
-        """Build messages for the LLM. document_only=True: answer only from document; do not assume aluminum."""
+        """Build messages for the LLM. document_only=True: answer only from document."""
+        import re as _re
+
         context_parts = []
         if document_context:
             context_parts.append(document_context.strip())
@@ -374,24 +449,60 @@ Always: Understand what the user is asking. Prefer the document content when the
             context_parts.append(products_context.strip())
         context_block = "\n\n".join(context_parts).strip()
 
-        user_content = f"Question: {query.strip()}"
+        # Try to extract filename from context header
+        file_match = _re.search(r"\[([^\[\]]+?)\s*(?:\(Page \d+\))?", document_context or "")
+        filename_hint = file_match.group(1).strip() if file_match else "the uploaded document"
+
         if context_block:
-            if document_only:
-                user_content += (
-                    "\n\nDocument content (from the user's uploaded file):\n"
-                    f"{context_block}\n\n"
-                    "Instructions: Answer ONLY from this document. Do not assume the document is about aluminum. "
-                    "If the document is not about aluminum products, say so clearly and summarize what it is actually about. "
-                    "Be accurate and concise."
+            if requested_page:
+                # User asked about a specific page — give very explicit instructions
+                user_content = (
+                    f"The user is asking: \"{query.strip()}\"\n\n"
+                    f"You are reading **Page {requested_page}** of **{filename_hint}**.\n\n"
+                    f"The extracted content from Page {requested_page} is provided below.\n\n"
+                    "---\n"
+                    f"{context_block}\n"
+                    "---\n\n"
+                    f"## Your Task\n"
+                    f"Answer the user's question **using ONLY the content from Page {requested_page}** above.\n\n"
+                    "**Format your response as follows:**\n"
+                    f"1. Start with: **📄 Page {requested_page} — {filename_hint}**\n"
+                    "2. Use headings, bullet points, or tables to organise the information clearly.\n"
+                    "3. Be concise — summarise and explain, don't just copy-paste raw text.\n"
+                    f"4. End with: **📌 Source: Page {requested_page} of {filename_hint}**\n\n"
+                    "If Page " + str(requested_page) + " has no relevant content for this question, say so clearly."
+                )
+            elif document_only:
+                user_content = (
+                    f"The user is asking: \"{query.strip()}\"\n\n"
+                    f"The uploaded document content is provided below:\n\n"
+                    "---\n"
+                    f"{context_block}\n"
+                    "---\n\n"
+                    "**Format your response:**\n"
+                    "- State which page(s) you are reading from at the top.\n"
+                    "- Use headings and bullet points — not long paragraphs.\n"
+                    "- If the document covers multiple pages, organise your answer by page.\n"
+                    "- End with: **📌 Source: [filename, page numbers]**\n"
+                    "- Do NOT assume the document is about aluminium unless it clearly is."
                 )
             else:
-                user_content += (
-                    "\n\nContext (uploaded documents and/or product catalog):\n"
-                    f"{context_block}\n\n"
-                    "Use this context to answer. If the document is not about aluminum, do not force aluminum into the answer. "
-                    "If something is not covered, say you don't have that information."
+                user_content = (
+                    f"The user is asking: \"{query.strip()}\"\n\n"
+                    "Use the context below (uploaded documents and/or product catalog) to answer.\n\n"
+                    "---\n"
+                    f"{context_block}\n"
+                    "---\n\n"
+                    "**Formatting rules:**\n"
+                    "- Cite the page/source where relevant (e.g., '(Page 2)').\n"
+                    "- Use bullet points or tables for multi-item answers.\n"
+                    "- If something is not in the context, say you don't have that information."
                 )
+        else:
+            user_content = f"The user is asking: \"{query.strip()}\""
+
         return [{"role": "user", "content": user_content}]
+
 
     def _create_response(
         self,
@@ -406,8 +517,10 @@ Always: Understand what the user is asking. Prefer the document content when the
         for stronger document QA. Otherwise uses LOCAL_LLM (transformers) or template fallback.
         """
         document_only = bool(document_context and not context.strip())
+        requested_page = self._detect_page_request(query)
         messages = self._build_llm_messages(
-            query, context, document_context, document_only=document_only
+            query, context, document_context, document_only=document_only,
+            requested_page=requested_page,
         )
         use_ollama_for_docs = getattr(self.config, "USE_OLLAMA_FOR_DOCUMENTS", False)
         ollama_base = getattr(self.config, "OLLAMA_BASE_URL", "http://localhost:11434")
@@ -432,11 +545,25 @@ Always: Understand what the user is asking. Prefer the document content when the
             except Exception as ollama_err:
                 logger.warning("Ollama document response failed, trying local LLM: %s", ollama_err)
 
-        # Prefer real-time answer generation with local LLM when enabled.
-        if getattr(self.config, "LOCAL_LLM_ENABLED", False):
+        # Prefer real-time answer generation with Ollama OR local LLM
+        if use_ollama_for_docs and is_ollama_available(ollama_base):
+            try:
+                answer = generate_answer_with_ollama(
+                    system_prompt=self.system_prompt,
+                    messages=messages,
+                    base_url=ollama_base,
+                    model=ollama_model,
+                    max_tokens=doc_max_tokens,
+                    temperature=getattr(self.config, "LOCAL_LLM_TEMPERATURE", 0.2),
+                )
+                if answer:
+                    return answer
+            except Exception as ollama_fall_err:
+                logger.warning("Ollama regular response failed: %s", ollama_fall_err)
+        
+        elif getattr(self.config, "LOCAL_LLM_ENABLED", False):
             try:
                 from src.chatbot.local_llm import generate_answer
-
                 default_tokens = getattr(self.config, "LOCAL_LLM_MAX_NEW_TOKENS", 256)
                 max_tokens = doc_max_tokens if document_context else default_tokens
                 answer = generate_answer(
@@ -554,10 +681,14 @@ Always: Understand what the user is asking. Prefer the document content when the
             except Exception as doc_err:
                 logger.exception("Document context failed (continuing without): %s", doc_err)
 
-            # Document-first: user asked to summarize/explain the uploaded file, or we have doc and they asked about it
+            has_doc = bool(document_context)
+            is_product_explicit = any(k in normalized for k in ["product", "aluminum", "aluminium", "alloy", "price", "cost", "specifications", "applications"])
+            
+            # Document-first: If we have an uploaded document, assume ALL questions are about the document
+            # UNLESS the user explicitly asks about aluminum products.
             is_doc_summary = self._is_document_summary_request(normalized) or (
-                bool(document_context) and self._wants_document_answer(normalized)
-            )
+                has_doc and self._wants_document_answer(normalized)
+            ) or (has_doc and not is_product_explicit)
 
             # Retrieve products only when the question is not purely about the document
             products = []

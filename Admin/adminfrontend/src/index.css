@@ -116,3 +116,14 @@ p { color: var(--text-secondary); line-height: 1.6; }
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* Markdown Styling */
+.markdown-container h1, .markdown-container h2, .markdown-container h3 { margin: 1rem 0 0.5rem 0; font-size: 1.1rem; }
+.markdown-container p { margin-bottom: 0.75rem; color: inherit; font-size: inherit; }
+.markdown-container ul, .markdown-container ol { margin-left: 1.25rem; margin-bottom: 1rem; }
+.markdown-container li { margin-bottom: 0.25rem; }
+.markdown-container table { border-collapse: collapse; width: 100%; margin: 1rem 0; background: rgba(0,0,0,0.2); border-radius: 8px; overflow: hidden; }
+.markdown-container th, .markdown-container td { padding: 8px 12px; border: 1px solid rgba(255,255,255,0.1); text-align: left; }
+.markdown-container th { background: rgba(255,255,255,0.05); font-weight: 600; color: var(--accent); }
+.markdown-container blockquote { border-left: 4px solid var(--accent); padding-left: 1rem; margin: 1rem 0; color: var(--text-secondary); font-style: italic; }
+.markdown-container code { background: rgba(255,255,255,0.1); padding: 2px 4px; border-radius: 4px; font-family: monospace; }

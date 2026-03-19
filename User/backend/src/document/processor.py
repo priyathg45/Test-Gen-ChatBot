@@ -6,6 +6,9 @@ import logging
 import os
 import re
 import tempfile
+import base64
+import json
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import List, Optional, Tuple
 
@@ -55,6 +58,94 @@ def _get_pdf_executor() -> ThreadPoolExecutor:
         _pdf_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pdf_extract")
     return _pdf_executor
 
+def _call_vision_llm_single(base_url: str, model: str, image_b64: str, page_num: int, filename: str) -> str:
+    """Call the Ollama vision LLM for a single page/image. Returns extracted text for that page."""
+    prompt = (
+        f"You are a document extraction assistant reading page {page_num} of a document.\n"
+        "1. Extract ALL text from this page exactly as it appears.\n"
+        "2. If there are charts, tables, diagrams, or images, describe them in detail.\n"
+        "3. Preserve headings, bullet points, and table structure where possible.\n"
+        "4. Do NOT add any commentary — just return the extracted/described content of this page."
+    )
+    body = {
+        "model": model,
+        "prompt": prompt,
+        "images": [image_b64],
+        "stream": False,
+        "options": {"temperature": 0.05, "num_predict": 1500},
+    }
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/api/generate",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        data = json.loads(resp.read().decode())
+        return (data.get("response") or "").strip()
+
+
+def extract_content_with_vision_llm(content: bytes, filename: str, is_pdf: bool) -> str:
+    """Uses Ollama Vision LLM to extract text page-by-page with guaranteed [PAGE_X] markers."""
+    try:
+        from src.config import config
+        if not getattr(config, "USE_VISION_LLM_FOR_EXTRACTION", False):
+            return ""
+
+        base_url = getattr(config, "OLLAMA_BASE_URL", "http://localhost:11434")
+        model = getattr(config, "OLLAMA_VISION_MODEL", "llama4-scout")
+
+        # Check if Ollama is reachable
+        try:
+            req = urllib.request.Request(f"{base_url.rstrip('/')}/api/tags", method="GET")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                if resp.status != 200:
+                    return ""
+        except Exception:
+            return ""
+
+        if is_pdf:
+            if not HAS_PDF2IMAGE:
+                logger.warning("Vision LLM: pdf2image not installed, cannot process PDF images.")
+                return ""
+            try:
+                pdf_images = convert_from_bytes(content, first_page=1, last_page=30, dpi=120)
+            except Exception as e:
+                logger.warning("Vision LLM PDF conversion failed: %s", e)
+                return ""
+
+            page_texts: List[str] = []
+            for page_num, img in enumerate(pdf_images, start=1):
+                try:
+                    buffered = io.BytesIO()
+                    img.save(buffered, format="JPEG", quality=85)
+                    image_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+                    logger.info("Vision LLM: processing page %d/%d of %s", page_num, len(pdf_images), filename)
+                    page_text = _call_vision_llm_single(base_url, model, image_b64, page_num, filename)
+                    if page_text:
+                        page_texts.append(f"[PAGE_{page_num}]\n{page_text}")
+                    else:
+                        page_texts.append(f"[PAGE_{page_num}]\n(No text extracted from this page)")
+                except Exception as e:
+                    logger.warning("Vision LLM failed on page %d of %s: %s", page_num, filename, e)
+                    page_texts.append(f"[PAGE_{page_num}]\n(Extraction failed for this page)")
+
+            if page_texts:
+                combined = "\n\n".join(page_texts)
+                logger.info("Vision LLM extracted %d pages / %d characters from %s", len(page_texts), len(combined), filename)
+                return combined
+            return ""
+        else:
+            # Single image
+            image_b64 = base64.b64encode(content).decode("utf-8")
+            result = _call_vision_llm_single(base_url, model, image_b64, 1, filename)
+            if result:
+                logger.info("Vision LLM extracted %d characters from image %s", len(result), filename)
+            return result
+
+    except Exception as e:
+        logger.warning("Vision LLM extraction failed for %s: %s", filename, e)
+        return ""
 
 def _extract_text_from_pdf_impl(content: bytes, filename: str, max_pages: int) -> str:
     """
@@ -95,7 +186,7 @@ def _extract_text_from_pdf_impl(content: bytes, filename: str, max_pages: int) -
                                     page_text += (span.get("text") or "") + " "
                 except Exception as e:
                     logger.debug("get_text('dict') fallback failed for page %s: %s", page_count + 1, e)
-            parts.append((page_text or "").strip())
+            parts.append(f"[PAGE_{page_count + 1}]\n" + (page_text or "").strip())
             page_count += 1
         text = "\n\n".join(p for p in parts if p).strip()
         text = re.sub(r"\n{3,}", "\n\n", text)
@@ -138,6 +229,11 @@ def extract_text_from_pdf(
     timeout = timeout if timeout is not None else PDF_EXTRACTION_TIMEOUT
     max_pages = max_pages if max_pages is not None else PDF_MAX_PAGES
 
+    # Try Vision LLM first (if enabled and reachable) for smart text & image understanding
+    vision_text = extract_content_with_vision_llm(content, filename, is_pdf=True)
+    if vision_text:
+        return vision_text
+
     text = ""
 
     # First try PyMuPDF / fitz when available.
@@ -167,7 +263,7 @@ def extract_text_from_pdf(
             for i in range(min(num_pages, max_pages)):
                 try:
                     page = reader.pages[i]
-                    parts.append(page.extract_text() or "")
+                    parts.append(f"[PAGE_{i + 1}]\n" + (page.extract_text() or "").strip())
                 except Exception as e:
                     logger.warning("PyPDF2 page %s failed for %s: %s", i + 1, filename or "stream", e)
                     parts.append("")
@@ -253,6 +349,11 @@ def extract_text_from_image(content: bytes, filename: str = "") -> str:
     Returns:
         Extracted text or empty string if OCR not available or fails.
     """
+    # Try Vision LLM first (if enabled and reachable) for smart image understanding
+    vision_text = extract_content_with_vision_llm(content, filename, is_pdf=False)
+    if vision_text:
+        return vision_text
+
     if not HAS_OCR:
         logger.warning(
             "PIL/pytesseract not installed; cannot extract image text. "
@@ -297,6 +398,8 @@ def chunk_text(
 
     chunks = []
     start = 0
+    page_marker_pattern = re.compile(r"\[PAGE_(\d+)\]")
+    
     while start < len(text):
         end = start + chunk_size
         # Prefer breaking at sentence or paragraph
@@ -308,6 +411,16 @@ def chunk_text(
                     break
         chunk = text[start:end].strip()
         if chunk:
+            # Find the active page number for this chunk
+            text_up_to_end = text[:end]
+            matches = list(page_marker_pattern.finditer(text_up_to_end))
+            if matches:
+                last_match = matches[-1]
+                page_num = last_match.group(1)
+                marker = f"[PAGE_{page_num}]\n"
+                if not chunk.startswith(f"[PAGE_{page_num}]"):
+                    chunk = marker + chunk
+            
             chunks.append(chunk)
         
         next_start = end - overlap if overlap < (end - start) else end
