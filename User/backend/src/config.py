@@ -110,7 +110,7 @@ class Config:
 
     # Vision LLM settings for document extraction (PDFs and images)
     USE_VISION_LLM_FOR_EXTRACTION = os.getenv('USE_VISION_LLM_FOR_EXTRACTION', 'true').lower() == 'true'
-    OLLAMA_VISION_MODEL = os.getenv('OLLAMA_VISION_MODEL', 'llama4-scout')
+    OLLAMA_VISION_MODEL = os.getenv('OLLAMA_VISION_MODEL', 'moondream')
 
 class DevelopmentConfig(Config):
     """Development configuration."""

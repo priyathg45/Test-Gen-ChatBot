@@ -80,7 +80,7 @@ def _call_vision_llm_single(base_url: str, model: str, image_b64: str, page_num:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=90) as resp:
+    with urllib.request.urlopen(req, timeout=300) as resp:
         data = json.loads(resp.read().decode())
         return (data.get("response") or "").strip()
 

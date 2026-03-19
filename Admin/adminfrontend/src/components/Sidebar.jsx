@@ -36,13 +36,19 @@ const Sidebar = () => {
         <h2 style={{ fontSize: '1.25rem', margin: 0 }}>Admin Portal</h2>
       </div>
       
-      <div style={styles.userProfile}>
+      <div 
+        style={{...styles.userProfile, cursor: 'pointer'}} 
+        className="sidebar-profile"
+        onClick={() => navigate('/profile')}
+      >
         <div style={styles.avatar}>
           {admin?.username?.charAt(0).toUpperCase() || 'A'}
         </div>
         <div>
           <div style={{ fontWeight: '600' }}>{admin?.username || 'Admin'}</div>
-          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Super Administrator</div>
+          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+            {admin?.role === 'superadmin' ? 'Super Administrator' : 'Administrator'}
+          </div>
         </div>
       </div>
 

@@ -13,6 +13,7 @@ const Header = () => {
     if (path === '/jobs') return 'Job Placements';
     if (path === '/logs') return 'System Audit Logs';
     if (path === '/chatbot') return 'Genesis Admin Assistant';
+    if (path === '/profile') return 'Admin Profile Settings';
     return 'Admin Portal';
   };
 
