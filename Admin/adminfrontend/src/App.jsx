@@ -12,6 +12,7 @@ import UserProfile from './pages/UserProfile';
 import SystemLogs from './pages/SystemLogs';
 import AdminChatbot from './pages/AdminChatbot';
 import AdminJobsPage from './pages/AdminJobsPage';
+import KnowledgeBase from './pages/KnowledgeBase';
 import AdminProfile from './pages/AdminProfile';
 
 // Protected Route Wrapper
@@ -44,6 +45,7 @@ function App() {
           <Route path="/jobs" element={<ProtectedRoute><AdminJobsPage /></ProtectedRoute>} />
           <Route path="/logs" element={<ProtectedRoute><SystemLogs /></ProtectedRoute>} />
           <Route path="/chatbot" element={<ProtectedRoute><AdminChatbot /></ProtectedRoute>} />
+          <Route path="/knowledge" element={<ProtectedRoute><KnowledgeBase /></ProtectedRoute>} />
           <Route path="/profile" element={<ProtectedRoute><AdminProfile /></ProtectedRoute>} />
           
           <Route path="*" element={<Navigate to="/" replace />} />

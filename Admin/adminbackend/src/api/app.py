@@ -38,6 +38,7 @@ def create_app():
     from .routes.chat import chat_bp
     from .routes.logs import logs_bp
     from .routes.chatbot import chatbot_bp
+    from .routes.knowledge import knowledge_bp
     from .routes.jobs import jobs_bp
     from .routes.health import health_bp
 
@@ -46,6 +47,7 @@ def create_app():
     app.register_blueprint(chat_bp, url_prefix='/chat')
     app.register_blueprint(logs_bp, url_prefix='/logs')
     app.register_blueprint(chatbot_bp, url_prefix='/admin-bot')
+    app.register_blueprint(knowledge_bp, url_prefix='/knowledge')
     app.register_blueprint(jobs_bp, url_prefix='/jobs')
     app.register_blueprint(health_bp, url_prefix='/health')
 

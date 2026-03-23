@@ -48,6 +48,11 @@ class AluminiumChatBot:
         self.database = database
         self.attachments_collection_name = attachments_collection_name or "chat_attachments"
         self.system_prompt = self._create_system_prompt()
+        
+        # In-memory cache for Global Knowledge Base to speed up retrieval
+        self.global_knowledge_cache = None
+        self.global_knowledge_embeddings = None
+        self.last_knowledge_refresh = None
 
     def _build_message(
         self,
@@ -82,37 +87,26 @@ class AluminiumChatBot:
                 logger.error(f"Failed to write message to MongoDB: {exc}")
     
     def _create_system_prompt(self) -> str:
-        """Create system prompt for the chatbot."""
-        return """You are AAW Assistant — a helpful, precise AI for Active Aluminium Windows.
+        """Create a direct, flexible system prompt for the chatbot."""
+        return """You are AAW Assistant — the premium, official AI for Active Aluminium Windows.
+Your goal is to provide specific, accurate, and helpful answers using the provided context.
 
-## CORE RULES
+## RESPONSE STYLE
+- **Direct & Specific**: Answer the user's question directly. If the context has specific details (IDs, specs, prices), include them.
+- **Context-First**: Always prioritize the provided "CONTEXT" block. If the answer is there, use it.
+- **Premium Layout**: 
+    - Use Markdown **Tables** for comparing items or listing specifications.
+    - **Bold** key technical terms (e.g., **6063-T5**), product names, and prices.
+    - Use bullet points for any list of 3+ items.
+- **No Fluff**: Avoid long introductory sentences. Get straight to the point.
 
-### When answering from an uploaded document:
-- ALWAYS state clearly which page(s) you are reading from, e.g.: **📄 Reading from Page 3 of report.pdf**
-- Structure your answer using Markdown with headings, bullet points, and tables — never a wall of text.
-- Keep each section concise and focused.
-- If the document is NOT about aluminium, say so clearly and summarise what it is actually about.
-- Do NOT invent content; be faithful to what is in the document.
+## SOURCE CITATION
+- ALWAYS state your source if using documents: **📄 Source: Page [X] of [Filename]**
+- Mention the **🌐 Global Knowledge Base** if it was your source.
+- End your response with: **📌 Information provided by AAW Product Intelligence.**
 
-### When answering about aluminium products (no document upload):
-- Reference specific product names, specifications, or prices from the knowledge base.
-- Use bullet points or tables to compare products when relevant.
-
-### Formatting rules you MUST follow every response:
-1. Use **bold** for key terms, labels, and product names.
-2. Use bullet lists for multi-item information.
-3. Use numbered lists for steps or ordered information.
-4. Use > blockquotes for important notes or warnings.
-5. Use tables when presenting comparative data.
-6. Add a `---` separator before a "Summary" or "Key Takeaways" section if the response is long.
-7. Always end document answers with: **📌 Source: Page X of [filename]** (on its own line).
-
-### What you must NEVER do:
-- Never write long unbroken paragraphs.
-- Never say "this document seems to be about aluminium" when it clearly is not.
-- Never produce a response without clear structure.
-
-Be clear, concise, and user-friendly."""
+If you cannot find the answer in the context, say exactly: "I don't have enough specific information in the current documents to answer that accurately."
+"""
 
     def _get_config_value(self, key: str, default=None):
         """Get config value from object or mapping."""
@@ -246,10 +240,9 @@ Be clear, concise, and user-friendly."""
     
     def _get_document_context_for_session(self, session_id: Optional[str], query: str) -> str:
         """
-        Load attachments for the session, chunk extracted text, and return relevant chunks for the query.
+        Load text from all attachments in this session and return relevant chunks with caching.
         """
         if not session_id or self.database is None or not self.attachments_collection_name:
-            logger.debug("Document context skipped: session_id=%s, db=%s", bool(session_id), self.database is not None)
             return ""
 
         try:
@@ -258,104 +251,221 @@ Be clear, concise, and user-friendly."""
                 self.attachments_collection_name,
                 session_id,
             )
-        except Exception as e:
-            logger.warning("Failed to load attachments for session %s: %s", session_id, e)
-            return ""
+            if not attachments:
+                if session_id in self.session_doc_cache:
+                    del self.session_doc_cache[session_id]
+                return ""
 
-        if not attachments:
-            logger.info("No attachments found for session %s", session_id)
-            return ""
+            # Check if cache is valid (based on attachment IDs)
+            current_att_ids = sorted([str(a["_id"]) for a in attachments])
+            cache_entry = self.session_doc_cache.get(session_id)
+            
+            needs_refresh = (
+                not cache_entry or 
+                cache_entry.get("att_ids") != current_att_ids
+            )
 
-        logger.info("Document context: session %s has %d attachment(s)", session_id, len(attachments))
-        all_chunks = []
-        for att in attachments:
-            try:
-                text = (att.get("extracted_text") or "").strip()
-                # If text was not extracted at upload (e.g. extraction failed), try lazily now.
-                if not text:
-                    file_bytes = get_attachment_file(self.database, att)
-                    if file_bytes:
-                        ctype = (att.get("content_type") or "").lower()
-                        if ctype == "application/pdf":
-                            timeout = self._get_config_value("DOC_PDF_TIMEOUT", 30)
-                            max_pages = self._get_config_value("DOC_MAX_PAGES", 80)
-                            text = extract_text_from_pdf(
-                                file_bytes,
-                                att.get("filename") or "",
-                                timeout=timeout,
-                                max_pages=max_pages,
-                            ) or ""
-                        elif ctype.startswith("image/"):
-                            text = extract_text_from_image(file_bytes, att.get("filename") or "") or ""
+            if needs_refresh:
+                logger.info("Building document cache for session %s...", session_id)
+                all_chunks = []
+                for att in attachments:
+                    try:
+                        text = (att.get("extracted_text") or "").strip()
+                        if not text:
+                            file_bytes = get_attachment_file(self.database, att)
+                            if file_bytes:
+                                ctype = (att.get("content_type") or "").lower()
+                                if ctype == "application/pdf":
+                                    text = extract_text_from_pdf(
+                                        file_bytes, att.get("filename", ""),
+                                        timeout=self._get_config_value("DOC_PDF_TIMEOUT", 30),
+                                        max_pages=self._get_config_value("DOC_MAX_PAGES", 80)
+                                    ) or ""
+                                elif ctype.startswith("image/"):
+                                    text = extract_text_from_image(file_bytes, att.get("filename", "")) or ""
+                                
+                                if text:
+                                    self.database[self.attachments_collection_name].update_one(
+                                        {"_id": att["_id"]},
+                                        {"$set": {"extracted_text": text[:1_000_000]}}
+                                    )
+                        
                         if text:
-                            try:
-                                self.database[self.attachments_collection_name].update_one(
-                                    {"_id": att["_id"]},
-                                    {"$set": {"extracted_text": text[:1_000_000]}},
-                                )
-                            except Exception as exc:
-                                logger.warning("Failed to update extracted_text for attachment %s: %s", att.get("_id"), exc)
-                    else:
-                        logger.warning("Could not read file for attachment %s (filename=%s)", att.get("_id"), att.get("filename"))
-                if not text:
-                    continue
-                chunk_size = self._get_config_value("DOC_CHUNK_SIZE", 500)
-                overlap = self._get_config_value("DOC_CHUNK_OVERLAP", 50)
-                chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
-                filename = att.get("filename", "document")
-                for c in chunks:
-                    all_chunks.append({"text": c, "filename": filename})
-            except Exception as exc:
-                import traceback
-                traceback.print_exc()
-                logger.warning("Skipping attachment %s (%s): %s", att.get("_id"), att.get("filename"), exc)
+                            chunks = chunk_text(
+                                text, 
+                                chunk_size=self._get_config_value("DOC_CHUNK_SIZE", 500),
+                                overlap=self._get_config_value("DOC_CHUNK_OVERLAP", 50)
+                            )
+                            filename = att.get("filename", "document")
+                            for c in chunks:
+                                all_chunks.append({"text": c, "filename": filename})
+                    except Exception as exc:
+                        logger.warning("Skipping attachment %s: %s", att.get("_id"), exc)
 
-        if not all_chunks:
-            logger.info("No text chunks from attachments for session %s (extraction may have produced no text)", session_id)
-            return ""
+                if not all_chunks:
+                    self.session_doc_cache[session_id] = {"chunks": [], "embeddings": None, "att_ids": current_att_ids}
+                    return ""
 
-        # ── Page-number filtering ─────────────────────────────────────────────
-        import re as _re
-        requested_page = self._detect_page_request(query)
-        if requested_page is not None:
-            page_marker = f"[PAGE_{requested_page}]"
-            page_chunks = [c for c in all_chunks if page_marker in c["text"]]
-            if page_chunks:
-                logger.info("Page filter: keeping %d chunks for page %d", len(page_chunks), requested_page)
-                all_chunks = page_chunks
-            else:
-                logger.info("Page filter: no chunks found for page %d, using all chunks", requested_page)
-        # ─────────────────────────────────────────────────────────────────────
-
-        top_k_doc = min(self._get_config_value("TOP_K_DOC_CHUNKS", 12), len(all_chunks))
-        chunks_to_use = all_chunks
-        if len(all_chunks) > MAX_DOC_CHUNKS_TO_EMBED:
-            step = max(1, len(all_chunks) // MAX_DOC_CHUNKS_TO_EMBED)
-            indices = list(range(0, len(all_chunks), step))[:MAX_DOC_CHUNKS_TO_EMBED]
-            chunks_to_use = [all_chunks[i] for i in indices]
-
-        try:
-            q = (query or "").strip() or "summary"
-            query_embedding = self.embeddings_manager.encode_text(q)
-            if query_embedding is None:
-                selected = chunks_to_use[:top_k_doc]
-            else:
+                # Limit and embed
+                chunks_to_use = all_chunks[:MAX_DOC_CHUNKS_TO_EMBED]
                 chunk_texts = [c["text"] for c in chunks_to_use]
-                # Use manager to encode instead of model directly, routing through Ollama if configured
-                chunk_embeddings = self.embeddings_manager.create_embeddings(chunk_texts)
+                logger.info("Creating embeddings for %d session chunks...", len(chunk_texts))
+                embeddings = self.embeddings_manager.create_embeddings(chunk_texts)
                 
-                if chunk_embeddings is None:
+                self.session_doc_cache[session_id] = {
+                    "chunks": chunks_to_use,
+                    "embeddings": embeddings,
+                    "att_ids": current_att_ids
+                }
+
+            # Use cached data for ranking
+            cache_entry = self.session_doc_cache[session_id]
+            chunks_to_use = cache_entry["chunks"]
+            chunk_embeddings = cache_entry["embeddings"]
+
+            if not chunks_to_use:
+                return ""
+
+            top_k_doc = min(self._get_config_value("TOP_K_DOC_CHUNKS", 12), len(chunks_to_use))
+            try:
+                q = (query or "").strip() or "summary"
+                query_embedding = self.embeddings_manager.encode_text(q)
+                if query_embedding is None or chunk_embeddings is None:
                     selected = chunks_to_use[:top_k_doc]
                 else:
                     sims = cosine_similarity([query_embedding], chunk_embeddings)[0]
                     top_k_here = min(top_k_doc, len(chunks_to_use))
                     top_indices = np.argsort(sims)[::-1][:top_k_here]
-                    selected = [chunks_to_use[i] for i in top_indices]
-        except Exception as e:
-            logger.warning("PDF chunk ranking failed (using first chunks): %s", e)
-            selected = chunks_to_use[:top_k_doc]
+                    selected = [chunks_to_use[i] for i in top_indices if sims[top_indices[i]] > 0.15]
+                    if not selected and len(top_indices) > 0:
+                        selected = [chunks_to_use[top_indices[0]]]
+            except Exception as e:
+                logger.warning("Session doc ranking failed: %s", e)
+                selected = chunks_to_use[:top_k_doc]
 
-        return self._format_document_context(selected)
+            return self._format_document_context(selected)
+
+        except Exception as e:
+            logger.error("Failed to load session documents: %s", e)
+            return ""
+
+    def _get_global_knowledge_context(self, query: str) -> str:
+        """
+        Load chunks from the global knowledge_base collection and return relevant ones for the query.
+        Uses in-memory caching to avoid expensive re-embedding on every chat message.
+        """
+        knowledge_coll_name = getattr(self.config, "MONGO_KNOWLEDGE_COLLECTION", "knowledge_base")
+        if self.database is None or not knowledge_coll_name:
+            return ""
+
+        try:
+            coll = self.database[knowledge_coll_name]
+            
+            # Check if we need to refresh the cache (very basic check: count documents)
+            current_count = coll.count_documents({})
+            if current_count == 0:
+                self.global_knowledge_cache = []
+                self.global_knowledge_embeddings = None
+                return ""
+
+            needs_refresh = (
+                self.global_knowledge_cache is None or 
+                len(self.global_knowledge_cache) != current_count or
+                (self.last_knowledge_refresh and (datetime.now() - self.last_knowledge_refresh).total_seconds() > 300)
+            )
+
+            if needs_refresh:
+                logger.info("Refreshing Global Knowledge Cache (Count: %d)...", current_count)
+                cursor = coll.find().limit(500)
+                new_chunks = []
+                for doc in cursor:
+                    new_chunks.append({
+                        "text": doc.get("content", ""),
+                        "filename": doc.get("filename", "global_doc")
+                    })
+                
+                self.global_knowledge_cache = new_chunks
+                self.last_knowledge_refresh = datetime.now()
+                
+                # Pre-calculate embeddings for the cache
+                if new_chunks:
+                    chunk_texts = [c["text"] for c in new_chunks]
+                    logger.info("Pre-calculating embeddings for %d global chunks...", len(chunk_texts))
+                    self.global_knowledge_embeddings = self.embeddings_manager.create_embeddings(chunk_texts)
+                else:
+                    self.global_knowledge_embeddings = None
+
+            if not self.global_knowledge_cache:
+                return ""
+
+            all_chunks = self.global_knowledge_cache
+            chunk_embeddings = self.global_knowledge_embeddings
+            top_k = min(self._get_config_value("TOP_K_KNOWLEDGE_CHUNKS", 4), len(all_chunks))
+            
+            # 1. Semantic Search
+            selected_semantic_indices = []
+            try:
+                query_embedding = self.embeddings_manager.encode_text(query or "general information")
+                if query_embedding is not None and chunk_embeddings is not None:
+                    sims = cosine_similarity([query_embedding], chunk_embeddings)[0]
+                    threshold = self._get_config_value("SIMILARITY_THRESHOLD", 0.6)
+                    selected_semantic_indices = [i for i in np.argsort(sims)[::-1] if sims[i] >= threshold]
+            except Exception as e:
+                logger.warning("Knowledge ranking failed: %s", e)
+
+            # 2. Keyword Search (Mirroring free-chatbot-main)
+            selected_keyword_indices = []
+            if self._get_config_value("ENABLE_KEYWORD_SEARCH", True) and query:
+                import re as _re
+                # Clean query and split into words
+                q_clean = _re.sub(r'[^a-z0-9 ]', '', (query or "").lower())
+                keywords = [w for w in q_clean.split() if len(w) > 2]
+                if keywords:
+                    for i, chunk in enumerate(all_chunks):
+                        content = chunk.get("text", "").lower()
+                        if any(kw in content for kw in keywords):
+                            selected_keyword_indices.append(i)
+
+            # Combine and remove duplicates, maintaining order (semantic first, then keyword)
+            combined_indices = []
+            seen = set()
+            for idx in selected_semantic_indices:
+                if idx not in seen:
+                    combined_indices.append(idx)
+                    seen.add(idx)
+            for idx in selected_keyword_indices:
+                if idx not in seen:
+                    combined_indices.append(idx)
+                    seen.add(idx)
+
+            # Limit to top_k
+            final_indices = combined_indices[:top_k]
+            selected = [all_chunks[i] for i in final_indices]
+
+            # 3. Recent Fallback (Mirroring free-chatbot-main)
+            if not selected and self._get_config_value("ENABLE_RECENT_KNOWLEDGE_FALLBACK", True):
+                logger.info("No specific matches found. Using recent knowledge fallback.")
+                try:
+                    sorted_chunks = sorted(all_chunks, key=lambda x: x.get('created_at', datetime.min), reverse=True)
+                    selected = sorted_chunks[:2]
+                except Exception:
+                    selected = all_chunks[-2:]
+
+            if not selected:
+                return ""
+
+            logger.info("Retrieved %d relevant chunks from global knowledge base (Semantic: %s, Keyword: %s).", 
+                        len(selected), len(selected_semantic_indices[:top_k]), len(selected_keyword_indices[:top_k]))
+            
+            formatted = self._format_document_context(selected)
+            # Tag it as global knowledge so LLM knows
+            if formatted:
+                return formatted.replace("=== DOCUMENT CONTEXT", "=== GLOBAL KNOWLEDGE BASE")
+            return ""
+
+        except Exception as e:
+            logger.error("Failed to load global knowledge: %s", e)
+            return ""
 
     def _detect_page_request(self, query: str) -> Optional[int]:
         """Return the 1-based page number if the user asked about a specific page, else None."""
@@ -450,8 +560,8 @@ Be clear, concise, and user-friendly."""
         context_block = "\n\n".join(context_parts).strip()
 
         # Try to extract filename from context header
-        file_match = _re.search(r"\[([^\[\]]+?)\s*(?:\(Page \d+\))?", document_context or "")
-        filename_hint = file_match.group(1).strip() if file_match else "the uploaded document"
+        file_match = _re.search(r"--- [^\[\]]+? of '([^']+?)' ---", document_context or "")
+        filename_hint = file_match.group(1).strip() if file_match else "the knowledge base"
 
         if context_block:
             if requested_page:
@@ -488,15 +598,16 @@ Be clear, concise, and user-friendly."""
                 )
             else:
                 user_content = (
-                    f"The user is asking: \"{query.strip()}\"\n\n"
-                    "Use the context below (uploaded documents and/or product catalog) to answer.\n\n"
-                    "---\n"
+                    f"USER QUESTION: \"{query.strip()}\"\n\n"
+                    f"CONTEXT PROVIDED:\n"
+                    f"---\n"
                     f"{context_block}\n"
-                    "---\n\n"
-                    "**Formatting rules:**\n"
-                    "- Cite the page/source where relevant (e.g., '(Page 2)').\n"
-                    "- Use bullet points or tables for multi-item answers.\n"
-                    "- If something is not in the context, say you don't have that information."
+                    f"---\n\n"
+                    f"INSTRUCTIONS:\n"
+                    f"- Answer the question using ONLY the context above.\n"
+                    f"- If you find multiple relevant details, use a Markdown Table.\n"
+                    f"- **Bold** critical product names and specifications.\n"
+                    f"- If the answer is not in the context, say: \"I don't have enough specific information in the current documents to answer that accurately.\""
                 )
         else:
             user_content = f"The user is asking: \"{query.strip()}\""
@@ -509,26 +620,34 @@ Be clear, concise, and user-friendly."""
         query: str,
         context: str,
         document_context: str = "",
+        knowledge_context: str = "",
     ) -> str:
         """
-        Create a response based on query, retrieved products, and optional document context.
-
-        When document context is present and USE_OLLAMA_FOR_DOCUMENTS is True, tries Ollama first
-        for stronger document QA. Otherwise uses LOCAL_LLM (transformers) or template fallback.
+        Create a response based on query, retrieved products, and optional document/knowledge context.
         """
-        document_only = bool(document_context and not context.strip())
+        document_only = bool((document_context or knowledge_context) and not context.strip())
         requested_page = self._detect_page_request(query)
+        
+        # Combine contexts for message building
+        combined_doc_context = ""
+        if document_context:
+            combined_doc_context += document_context
+        if knowledge_context:
+            if combined_doc_context:
+                combined_doc_context += "\n\n"
+            combined_doc_context += knowledge_context
+
         messages = self._build_llm_messages(
-            query, context, document_context, document_only=document_only,
+            query, context, combined_doc_context, document_only=document_only,
             requested_page=requested_page,
         )
         use_ollama_for_docs = getattr(self.config, "USE_OLLAMA_FOR_DOCUMENTS", False)
         ollama_base = getattr(self.config, "OLLAMA_BASE_URL", "http://localhost:11434")
         ollama_model = getattr(self.config, "OLLAMA_MODEL", "llama3.2")
 
-        # When we have document context, prefer Ollama for better PDF/document understanding.
+        # When we have any document context (session OR global), prefer Ollama for specialist QA.
         doc_max_tokens = getattr(self.config, "DOC_LLM_MAX_TOKENS", 1024)
-        if document_context and use_ollama_for_docs:
+        if combined_doc_context and use_ollama_for_docs:
             try:
                 from src.chatbot.ollama_llm import generate_answer_with_ollama, is_ollama_available
                 if is_ollama_available(ollama_base):
@@ -545,27 +664,12 @@ Be clear, concise, and user-friendly."""
             except Exception as ollama_err:
                 logger.warning("Ollama document response failed, trying local LLM: %s", ollama_err)
 
-        # Prefer real-time answer generation with Ollama OR local LLM
-        if use_ollama_for_docs and is_ollama_available(ollama_base):
-            try:
-                answer = generate_answer_with_ollama(
-                    system_prompt=self.system_prompt,
-                    messages=messages,
-                    base_url=ollama_base,
-                    model=ollama_model,
-                    max_tokens=doc_max_tokens,
-                    temperature=getattr(self.config, "LOCAL_LLM_TEMPERATURE", 0.2),
-                )
-                if answer:
-                    return answer
-            except Exception as ollama_fall_err:
-                logger.warning("Ollama regular response failed: %s", ollama_fall_err)
-        
-        elif getattr(self.config, "LOCAL_LLM_ENABLED", False):
+        # Fallback to local LLM or template if Ollama is off or failed
+        if getattr(self.config, "LOCAL_LLM_ENABLED", False):
             try:
                 from src.chatbot.local_llm import generate_answer
                 default_tokens = getattr(self.config, "LOCAL_LLM_MAX_NEW_TOKENS", 256)
-                max_tokens = doc_max_tokens if document_context else default_tokens
+                max_tokens = doc_max_tokens if combined_doc_context else default_tokens
                 answer = generate_answer(
                     system_prompt=self.system_prompt,
                     messages=messages,
@@ -579,18 +683,18 @@ Be clear, concise, and user-friendly."""
             except Exception as llm_err:
                 logger.warning("Local LLM generation failed, falling back to simple template: %s", llm_err)
 
-        # Fallback: echo context when LLM is unavailable.
-        if document_context:
+        # Final Fallback: echo context when LLM is unavailable.
+        if combined_doc_context:
             if document_only:
                 return (
                     "I've read your document. Here is the content I have:\n\n"
-                    f"{document_context[:4000]}{'...' if len(document_context) > 4000 else ''}\n\n"
+                    f"{combined_doc_context[:4000]}{'...' if len(combined_doc_context) > 4000 else ''}\n\n"
                     "Ask me to summarize or explain any part, or about budget/quotation if it applies."
                 )
             intro = "I've read your document."
             if context.strip():
                 intro = "I've read your document and matched relevant jobs/products."
-            return f"""{intro}\n\nDocument:\n{document_context[:3000]}{'...' if len(document_context) > 3000 else ''}\n\nRelated products:\n{context}\n\nAsk follow-up questions (summarize, budget, quotation)."""
+            return f"""{intro}\n\nDocument:\n{combined_doc_context[:3000]}{'...' if len(combined_doc_context) > 3000 else ''}\n\nRelated products:\n{context}\n\nAsk follow-up questions (summarize, budget, quotation)."""
 
         # No document context – answer from retrieved jobs/products only.
         base = f"Question: {query.strip()}\n\n"
@@ -676,21 +780,22 @@ Be clear, concise, and user-friendly."""
 
             # Retrieve relevant document chunks from uploaded PDFs/images for this session
             document_context = ""
+            knowledge_context = ""
             try:
                 document_context = self._get_document_context_for_session(session_id, user_message) or ""
+                knowledge_context = self._get_global_knowledge_context(user_message) or ""
             except Exception as doc_err:
-                logger.exception("Document context failed (continuing without): %s", doc_err)
+                logger.exception("Context retrieval failed: %s", doc_err)
 
-            has_doc = bool(document_context)
+            has_doc = bool(document_context or knowledge_context)
             is_product_explicit = any(k in normalized for k in ["product", "aluminum", "aluminium", "alloy", "price", "cost", "specifications", "applications"])
             
-            # Document-first: If we have an uploaded document, assume ALL questions are about the document
-            # UNLESS the user explicitly asks about aluminum products.
+            # Context-first: If we have documents, favor them
             is_doc_summary = self._is_document_summary_request(normalized) or (
                 has_doc and self._wants_document_answer(normalized)
             ) or (has_doc and not is_product_explicit)
 
-            # Retrieve products only when the question is not purely about the document
+            # Retrieve products only when the question is not purely about documents
             products = []
             context = ""
             if not is_doc_summary:
@@ -702,23 +807,22 @@ Be clear, concise, and user-friendly."""
             # Decide how to build the response
             try:
                 if is_doc_summary:
-                    if document_context:
-                        # User asked to summarize/describe the attached PDF: answer only from the document,
-                        # do not show the RELEVANT PRODUCTS block.
-                        response_text = self._create_response(user_message, "", document_context=document_context)
+                    if has_doc:
+                        # Answer only from the document/knowledge base
+                        response_text = self._create_response(
+                            user_message, "", document_context=document_context, knowledge_context=knowledge_context
+                        )
                         products = []
                     else:
-                        # No document context: extraction + OCR (if enabled) produced no text.
+                        # No document context found
                         response_text = (
-                            "I couldn't read any text from that file. Try uploading a PDF with selectable text, "
-                            "or a clearer image. If it's a scanned PDF, installing Tesseract and poppler may help. "
-                            "Once I can read it, I'll summarize it and answer questions about its content."
+                            "I couldn't find relevant information in the uploaded documents or knowledge base. "
+                            "Please ensure the information you're looking for is included in the PDFs."
                         )
                 else:
-                    if document_context:
-                        # Has document: answer from it (and products only if relevant); don't force aluminum
+                    if has_doc:
                         response_text = self._create_response(
-                            user_message, context or "", document_context=document_context
+                            user_message, context or "", document_context=document_context, knowledge_context=knowledge_context
                         )
                     elif not products or not context:
                         response_text = self._create_fallback_response(user_message)
@@ -897,3 +1001,75 @@ Be clear, concise, and user-friendly."""
             'model_name': self.embeddings_manager.model_name,
             'embedding_dimension': self.embeddings_manager.get_embedding_dimension()
         }
+    def chat_stream(
+        self,
+        query: str,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ):
+        """
+        Streaming version of chat. Yields chunks of text.
+        """
+        if not query.strip():
+            yield "Please provide a message."
+            return
+
+        # 1. Retrieve Context
+        products = self.retriever.retrieve(query)
+        context = self._format_products_context(products)
+        
+        document_context = ""
+        knowledge_context = ""
+        try:
+            document_context = self._get_document_context_for_session(session_id, query) or ""
+            knowledge_context = self._get_global_knowledge_context(query) or ""
+        except Exception as e:
+            logger.error("Context retrieval failed: %s", e)
+
+        combined_doc_context = ""
+        if document_context: combined_doc_context += document_context
+        if knowledge_context:
+            if combined_doc_context: combined_doc_context += "\n\n"
+            combined_doc_context += knowledge_context
+
+        document_only = bool(combined_doc_context and not context.strip())
+        requested_page = self._detect_page_request(query)
+
+        # 2. Build Messages
+        messages = self._build_llm_messages(
+            query, context, combined_doc_context, document_only=document_only,
+            requested_page=requested_page,
+        )
+
+        # 3. Stream from LLM
+        use_ollama = getattr(self.config, "USE_OLLAMA_FOR_DOCUMENTS", False)
+        ollama_base = getattr(self.config, "OLLAMA_BASE_URL", "http://localhost:11434")
+        ollama_model = getattr(self.config, "OLLAMA_MODEL", "llama3.2")
+
+        full_response = ""
+        if use_ollama:
+            try:
+                from src.chatbot.ollama_llm import stream_answer_with_ollama
+                for chunk in stream_answer_with_ollama(
+                    system_prompt=self.system_prompt,
+                    messages=messages,
+                    base_url=ollama_base,
+                    model=ollama_model,
+                ):
+                    full_response += chunk
+                    yield chunk
+            except Exception as e:
+                logger.warning("Streaming failed: %s", e)
+                yield "Error during streaming. Please try again."
+        else:
+            # Fallback to non-streaming chat if Ollama is off
+            resp_obj = self.chat(query, session_id, user_id)
+            yield resp_obj.get("message", "Internal Error")
+            return
+
+        # 4. Save to history (after streaming finishes)
+        if full_response:
+            user_msg = self._build_message('user', query, session_id, user_id)
+            ai_msg = self._build_message('assistant', full_response, session_id, user_id)
+            self._save_message(user_msg)
+            self._save_message(ai_msg)

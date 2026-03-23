@@ -3,6 +3,7 @@ import './Chatbot.css';
 import { CHAT_API_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import JobFormCard from './JobFormCard';
 
 const generateSessionId = () =>
@@ -199,7 +200,6 @@ const Chatbot = () => {
     const trimmed = input.trim();
     if ((!trimmed && stagedFiles.length === 0) || loading || uploading) return;
 
-    // Detect job intent BEFORE sending — show inline job form
     if (isJobIntent(trimmed) && stagedFiles.length === 0) {
       appendMessage(trimmed, 'user');
       setInput('');
@@ -208,8 +208,6 @@ const Chatbot = () => {
     }
 
     let uploadedNames = [];
-
-    // Upload all staged files using /upload-multiple
     if (stagedFiles.length > 0) {
       setUploading(true);
       const formData = new FormData();
@@ -222,12 +220,7 @@ const Chatbot = () => {
           method: 'POST', headers, body: formData,
         });
         const data = await res.json();
-        if (data.uploaded && data.uploaded.length > 0) {
-          uploadedNames = data.uploaded.map(u => u.filename);
-        }
-        if (data.errors && data.errors.length > 0) {
-          appendMessage(`⚠️ Some files failed: ${data.errors.join(', ')}`, 'bot');
-        }
+        if (data.uploaded) uploadedNames = data.uploaded.map(u => u.filename);
       } catch {
         appendMessage('Upload failed. Please try again.', 'bot');
         setUploading(false);
@@ -238,9 +231,7 @@ const Chatbot = () => {
       }
     }
 
-    const attachLabel = uploadedNames.length > 0
-      ? `[Attached: ${uploadedNames.join(', ')}]`
-      : '';
+    const attachLabel = uploadedNames.length > 0 ? `[Attached: ${uploadedNames.join(', ')}]` : '';
     const actualMessage = [attachLabel, trimmed].filter(Boolean).join('\n');
     const displayMessage = uploadedNames.length > 0
       ? `📎 ${uploadedNames.join(', ')}${trimmed ? '\n' + trimmed : ''}`
@@ -253,35 +244,60 @@ const Chatbot = () => {
     try {
       const headers = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
-      const res = await fetch(`${CHAT_API_URL}/chat`, {
+      
+      const res = await fetch(`${CHAT_API_URL}/chat/stream`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ message: actualMessage, session_id: sessionIdRef.current }),
       });
 
-      let data = {};
-      try { data = await res.json(); } catch (_) { data = {}; }
-
       if (!res.ok) {
-        appendMessage(data.error || 'Something went wrong. Please try again.', 'bot');
+        setLoading(false);
+        const errData = await res.json().catch(() => ({}));
+        appendMessage(errData.error || 'Connection error.', 'bot');
         return;
       }
 
-      // Check if the bot reply itself triggers a job form
-      if (data.action === 'show_job_form') {
-        appendMessage(data.message || '', 'bot');
-        appendMessage('', 'bot', { type: 'job_form', sessionId: sessionIdRef.current });
-      } else if (data.success !== false && data.message) {
-        appendMessage(data.message, 'bot');
-      } else {
-        appendMessage(data.error || 'Could not get a response. Please try again.', 'bot');
+      // Handle stream
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let botMsgId = Date.now() + Math.random();
+      let fullText = "";
+      let firstChunk = true;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunkStr = decoder.decode(value, { stream: true });
+        // SSE lines: "data: {...}\n\n"
+        const lines = chunkStr.split('\n');
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const dataStr = line.slice(6).trim();
+            if (dataStr === '[DONE]') continue;
+            try {
+              const data = JSON.parse(dataStr);
+              if (data.chunk) {
+                if (firstChunk) {
+                  setLoading(false);
+                  setMessages(prev => [...prev, { id: botMsgId, from: 'bot', text: data.chunk }]);
+                  firstChunk = false;
+                } else {
+                  setMessages(prev => prev.map(m => 
+                    m.id === botMsgId ? { ...m, text: m.text + data.chunk } : m
+                  ));
+                }
+                fullText += data.chunk;
+              }
+            } catch (e) {
+              console.warn("Parse error in stream:", e);
+            }
+          }
+        }
       }
     } catch (err) {
-      const msg =
-        err.message === 'Failed to fetch'
-          ? 'Cannot reach the chat server. Make sure the backend is running at ' + CHAT_API_URL
-          : err.message || 'Network error. Please try again.';
-      appendMessage(msg, 'bot');
+      appendMessage(err.message || 'Network error.', 'bot');
     } finally {
       setLoading(false);
       setTimeout(scrollToBottom, 100);
@@ -309,7 +325,7 @@ const Chatbot = () => {
           <div className="bot-bubble">
             {m.type === 'job_form'
               ? <JobFormCard sessionId={m.sessionId || sessionIdRef.current} />
-              : <ReactMarkdown>{m.text}</ReactMarkdown>
+              : <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
             }
           </div>
         </div>

@@ -3,7 +3,7 @@ import io
 import os
 import sys
 import logging
-from flask import Flask, request, jsonify, send_file, g
+from flask import Flask, request, jsonify, send_file, g, Response
 from flask_cors import CORS
 from datetime import datetime
 
@@ -509,6 +509,42 @@ def chat():
             'success': False,
             'error': str(e)
         }), 500
+
+@app.route('/chat/stream', methods=['POST'])
+def chat_stream_route():
+    """Streaming chat endpoint using Server-Sent Events (SSE)."""
+    try:
+        data = request.get_json()
+        if not data or 'message' not in data:
+            return jsonify({'success': False, 'error': 'No message provided'}), 400
+        
+        user_message = data['message'].strip()
+        session_id = data.get('session_id')
+        payload = _current_user()
+        user_id = payload['sub'] if payload else None
+
+        if user_id:
+            log_activity(
+                _get_logs_coll(),
+                user_id=user_id,
+                action=ACTION_CHAT,
+                resource='chat/stream',
+                details={'session_id': session_id},
+                ip=request.remote_addr,
+            )
+
+        def generate():
+            for chunk in chatbot.chat_stream(user_message, session_id=session_id, user_id=user_id):
+                # SSE format: data: <content>\n\n
+                import json
+                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return Response(generate(), mimetype='text/event-stream')
+
+    except Exception as e:
+        logger.error(f"Error in chat_stream endpoint: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/history', methods=['GET'])
 def get_history():
@@ -1272,5 +1308,5 @@ if __name__ == '__main__':
         debug=app.config['DEBUG'],
         host='0.0.0.0',
         port=5000,
-        use_reloader=app.config['DEBUG'],
+        use_reloader=False, # Set to False for Windows stability with SSE
     )

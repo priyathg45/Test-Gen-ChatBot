@@ -102,3 +102,47 @@ def generate_answer_with_ollama(
     except Exception as e:
         logger.warning("Ollama generate failed: %s", e)
         return ""
+def stream_answer_with_ollama(
+    system_prompt: str,
+    messages: List[Dict[str, str]],
+    base_url: str = "http://localhost:11434",
+    model: str = "llama3.2",
+    max_tokens: int = 512,
+    temperature: float = 0.3,
+):
+    """
+    Stream an answer from Ollama (local LLM server).
+    Yields chunks of text as they arrive.
+    """
+    if not is_ollama_available(base_url):
+        yield "Error: Ollama server not reachable."
+        return
+
+    try:
+        import json
+        import urllib.request
+        prompt = _build_prompt(system_prompt, messages)
+        body = {
+            "model": model,
+            "prompt": prompt,
+            "stream": True,
+            "options": {"temperature": temperature, "num_predict": max_tokens},
+        }
+        req = urllib.request.Request(
+            f"{base_url.rstrip('/')}/api/generate",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            for line in resp:
+                if line:
+                    chunk = json.loads(line.decode("utf-8"))
+                    text = chunk.get("response", "")
+                    if text:
+                        yield text
+                    if chunk.get("done"):
+                        break
+    except Exception as e:
+        logger.warning("Ollama streaming failed: %s", e)
+        yield f"Error during streaming: {str(e)}"

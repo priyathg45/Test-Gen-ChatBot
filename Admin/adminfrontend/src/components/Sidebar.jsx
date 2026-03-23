@@ -7,7 +7,8 @@ import {
   FileText, 
   LogOut,
   Shield,
-  Briefcase
+  Briefcase,
+  Database
 } from 'lucide-react';
 import { useContext } from 'react';
 import { AuthContext } from '../AuthContext';
@@ -26,6 +27,7 @@ const Sidebar = () => {
     { icon: <Users size={20} />, label: 'User Management', path: '/users' },
     { icon: <Briefcase size={20} />, label: 'Jobs', path: '/jobs' },
     { icon: <FileText size={20} />, label: 'System Logs', path: '/logs' },
+    { icon: <Database size={20} />, label: 'Knowledge Base', path: '/knowledge' },
     { icon: <MessageSquare size={20} />, label: 'Admin Assistant', path: '/chatbot' },
   ];
 

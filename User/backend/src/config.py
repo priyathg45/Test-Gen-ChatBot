@@ -35,6 +35,7 @@ class Config:
     MONGO_ATTACHMENTS_COLLECTION = os.getenv('MONGO_ATTACHMENTS_COLLECTION', 'chat_attachments')
     MONGO_USERS_COLLECTION = os.getenv('MONGO_USERS_COLLECTION', 'users')
     MONGO_ACTIVITY_LOGS_COLLECTION = os.getenv('MONGO_ACTIVITY_LOGS_COLLECTION', 'activity_logs')
+    MONGO_KNOWLEDGE_COLLECTION = os.getenv('MONGO_KNOWLEDGE_COLLECTION', 'knowledge_base')
     # Max size for uploaded files (bytes) – 10 MB
     MAX_UPLOAD_SIZE = int(os.getenv('MAX_UPLOAD_SIZE', 10 * 1024 * 1024))
     # SRV URIs require TLS; allow override via env
@@ -61,10 +62,11 @@ class Config:
     # Model settings (semantic search / embeddings)
     # Set to true to route all embeddings through Ollama instead of relying on SentenceTransformers PyTorch weights.
     USE_OLLAMA_FOR_EMBEDDINGS = os.getenv('USE_OLLAMA_FOR_EMBEDDINGS', 'true').lower() == 'true'
-    # Default to a higher-accuracy model or your preferred Ollama model
-    MODEL_NAME = os.getenv('MODEL_NAME', 'llama4-scout')
-    TOP_K_RESULTS = int(os.getenv('TOP_K_RESULTS', 3))
-    SIMILARITY_THRESHOLD = float(os.getenv('SIMILARITY_THRESHOLD', 0.3))
+    # Default to a faster, smaller model for speed as per free-chatbot-main project
+    MODEL_NAME = os.getenv('MODEL_NAME', 'llama3.2:1b')
+    TOP_K_RESULTS = int(os.getenv('TOP_K_RESULTS', 2))
+    SIMILARITY_THRESHOLD = float(os.getenv('SIMILARITY_THRESHOLD', 0.6))
+    ENABLE_KEYWORD_SEARCH = os.getenv('ENABLE_KEYWORD_SEARCH', 'true').lower() == 'true'
     
     # Local LLM settings (for answer generation, optional)
     # Disabled by default so document QA returns quickly using extracted text (CPU-friendly).
@@ -92,7 +94,9 @@ class Config:
     # Document RAG (uploaded PDFs/images) – smaller/fewer chunks = faster on CPU
     DOC_CHUNK_SIZE = int(os.getenv('DOC_CHUNK_SIZE', 400))
     DOC_CHUNK_OVERLAP = int(os.getenv('DOC_CHUNK_OVERLAP', 50))
-    TOP_K_DOC_CHUNKS = int(os.getenv('TOP_K_DOC_CHUNKS', 6))
+    TOP_K_DOC_CHUNKS = int(os.getenv('TOP_K_DOC_CHUNKS', 3))
+    TOP_K_KNOWLEDGE_CHUNKS = int(os.getenv('TOP_K_KNOWLEDGE_CHUNKS', 4))
+    ENABLE_RECENT_KNOWLEDGE_FALLBACK = os.getenv('ENABLE_RECENT_KNOWLEDGE_FALLBACK', 'true').lower() == 'true'
     # PDF extraction limits to avoid UI hangs
     DOC_MAX_PAGES = int(os.getenv('DOC_MAX_PAGES', 50))
     DOC_PDF_TIMEOUT = int(os.getenv('DOC_PDF_TIMEOUT', 20))
@@ -104,7 +108,7 @@ class Config:
     # Set true only if Ollama is running (e.g. ollama run llama3.2) for LLM-powered document answers.
     USE_OLLAMA_FOR_DOCUMENTS = os.getenv('USE_OLLAMA_FOR_DOCUMENTS', 'true').lower() == 'true'
     OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
-    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama4-scout')
+    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:1b')
     # Max tokens for document summaries/answers when using Ollama/local LLM (lower = faster on CPU)
     DOC_LLM_MAX_TOKENS = int(os.getenv('DOC_LLM_MAX_TOKENS', 512))
 

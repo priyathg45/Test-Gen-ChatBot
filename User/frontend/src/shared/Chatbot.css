@@ -173,10 +173,11 @@
   flex: 1;
   background: #ffffff;
   border-radius: 4px 18px 18px 18px;
-  padding: 12px 15px;
-  box-shadow: 0 1px 6px rgba(0,0,0,0.08);
-  border-left: 3px solid #fdbe33;
+  padding: 14px 18px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+  border-left: 4px solid #fdbe33;
   color: #1a2035;
+  line-height: 1.6;
 }
 
 /* ─── Typing indicator ────────────────────────────────────────── */
@@ -234,26 +235,29 @@
 /* Lists */
 .bot-bubble ul,
 .bot-bubble ol {
-  margin: 6px 0 10px;
-  padding-left: 22px;
+  margin: 10px 0 14px;
+  padding-left: 24px;
 }
 
-.bot-bubble ul { list-style: none; padding-left: 16px; }
+.bot-bubble ul { list-style: none; padding-left: 18px; }
+.bot-bubble ul li {
+  position: relative;
+  margin-bottom: 8px;
+  padding-left: 4px;
+}
+
 .bot-bubble ul li::before {
-  content: '›';
-  color: #fdbe33;
-  font-weight: 700;
-  display: inline-block;
-  width: 14px;
-  margin-left: -14px;
+  content: '→';
+  color: #f5a623;
+  font-weight: 800;
+  position: absolute;
+  left: -20px;
+  top: 0;
 }
 
 .bot-bubble ol li {
-  margin-bottom: 5px;
-}
-
-.bot-bubble ul li {
-  margin-bottom: 5px;
+  margin-bottom: 8px;
+  font-weight: 500;
 }
 
 /* Blockquote */
@@ -276,32 +280,47 @@
   margin: 10px 0;
 }
 
-/* Tables */
+/* Tables - Premium Layout */
 .bot-bubble table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 13px;
-  margin: 10px 0;
-  border-radius: 6px;
+  margin: 14px 0;
+  border: 1px solid #e2e6ef;
+  border-radius: 10px;
   overflow: hidden;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.04);
 }
 
 .bot-bubble th {
   background: #030f27;
   color: #fdbe33;
-  padding: 7px 10px;
+  padding: 10px 12px;
   text-align: left;
-  font-weight: 600;
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.5px;
 }
 
 .bot-bubble td {
-  padding: 6px 10px;
-  border-bottom: 1px solid #eef0f5;
+  padding: 10px 12px;
+  border-bottom: 1px solid #f0f2f7;
   color: #2d3550;
+  transition: background 0.2s;
+}
+
+.bot-bubble tr:last-child td {
+  border-bottom: none;
 }
 
 .bot-bubble tr:nth-child(even) td {
-  background: #f7f8fc;
+  background: #fcfdfe;
+}
+
+.bot-bubble tr:hover td {
+  background: #f4f8ff;
 }
 
 /* Code inline */
@@ -333,9 +352,26 @@
   font-size: inherit;
 }
 
-/* Strong / Em */
-.bot-bubble strong { color: #030f27; font-weight: 700; }
-.bot-bubble em     { color: #555; }
+/* Strong / Em - More Contrast */
+.bot-bubble strong { 
+  color: #030f27; 
+  font-weight: 800;
+  background: rgba(253, 190, 51, 0.08);
+  padding: 0 2px;
+  border-radius: 2px;
+}
+.bot-bubble em { 
+  color: #5d6d7e;
+  font-style: italic;
+}
+
+/* Underline Support */
+.bot-bubble u {
+  text-decoration: underline;
+  text-decoration-color: #fdbe33;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 2px;
+}
 
 /* Links */
 .bot-bubble a {

@@ -19,6 +19,7 @@ class Config:
 
     MONGO_ACTIVITY_LOGS_COLLECTION = 'activity_logs'
     MONGO_ADMIN_HISTORY_COLLECTION = 'admin_chat_history'
+    MONGO_KNOWLEDGE_COLLECTION = 'knowledge_base'
     
     # Ollama Settings
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
